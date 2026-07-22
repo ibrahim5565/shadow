@@ -42,12 +42,6 @@ Aegis_Gold/logs/*
 !Aegis_Gold/logs/.gitkeep
 Aegis_Gold/onnx_exports/*
 !Aegis_Gold/onnx_exports/.gitkeep
-Aegis_Gold/brain/*
-!Aegis_Gold/brain/.gitkeep
-Aegis_Gold/scratch/*
-!Aegis_Gold/scratch/.gitkeep
-Aegis_Gold/persistence/*
-!Aegis_Gold/persistence/.gitkeep
 
 # Large machine learning model weights
 Aegis_Gold/models/*.pt
