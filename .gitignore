@@ -26,7 +26,6 @@ ENV/
 *.local
 
 # System/IDE configs
-.vscode/
 .idea/
 .DS_Store
 *.suo
