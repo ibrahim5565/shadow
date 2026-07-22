@@ -1,0 +1,65 @@
+# Environments and Credentials
+.env
+.env.local
+.env.*.local
+*.env
+**/.*env
+Aegis_Gold/.env
+
+# Virtual Environments
+.venv_cuda/
+venv/
+.venv/
+env/
+ENV/
+
+# Python caching
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node/Vite build outputs and dependencies
+**/node_modules/
+**/dist/
+**/dist-ssr/
+*.local
+
+# System/IDE configs
+.vscode/
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Application Data & Large DBs/Logs
+Aegis_Gold/data/*
+!Aegis_Gold/data/.gitkeep
+Aegis_Gold/logs/*
+!Aegis_Gold/logs/.gitkeep
+Aegis_Gold/onnx_exports/*
+!Aegis_Gold/onnx_exports/.gitkeep
+Aegis_Gold/brain/*
+!Aegis_Gold/brain/.gitkeep
+Aegis_Gold/scratch/*
+!Aegis_Gold/scratch/.gitkeep
+Aegis_Gold/persistence/*
+!Aegis_Gold/persistence/.gitkeep
+
+# Large machine learning model weights
+Aegis_Gold/models/*.pt
+Aegis_Gold/models/*.pkl
+Aegis_Gold/models/backup_*
+Aegis_Gold/models/checkpoints/
+
+# Generic log and state files
+*.log
+*.db
+*.csv
+*.lock
+bot_errors.txt
+bot_trades.txt
+bot_startup_debug.txt

@@ -1,0 +1,42 @@
+# AEGIS GOLD — GPU Training Requirements
+# Python 3.14 compatible versions with CUDA 12.4 support
+
+# Core ML Libraries (will be installed via nightly wheel)
+# torch>=2.6.0
+# torchvision>=0.20.0
+# torchaudio>=2.5.0
+
+# Data Processing
+numpy>=1.26.0
+pandas>=2.2.0
+scikit-learn>=1.5.0
+
+# Machine Learning
+xgboost>=2.1.0
+lightgbm>=4.5.0
+
+# Reinforcement Learning
+gymnasium>=0.29.0
+stable-baselines3>=2.3.0
+
+# Utilities
+tqdm>=4.66.0
+psutil>=6.0.0
+
+# API & Web
+flask>=3.0.0
+flask-cors>=4.0.0
+requests>=2.32.0
+
+# MetaTrader 5
+MetaTrader5>=5.0.4508
+
+# Telegram
+python-telegram-bot>=21.0
+
+# Plotting (optional)
+matplotlib>=3.9.0
+seaborn>=0.13.0
+
+# Performance monitoring
+nvidia-ml-py3>=7.352.0

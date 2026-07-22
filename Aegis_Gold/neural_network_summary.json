@@ -1,0 +1,66 @@
+{
+  "timestamp": "2026-07-14T19:06:05.283102",
+  "system": "AEGIS GOLD Neural Networks",
+  "networks": {
+    "q_network": {
+      "type": "Deep Q-Network (DQN)",
+      "input_size": 50,
+      "hidden_layers": [
+        256,
+        256,
+        128
+      ],
+      "output_size": 3,
+      "activation": "ReLU + Dropout",
+      "purpose": "Action-Value Estimation"
+    },
+    "actor_critic": {
+      "type": "Proximal Policy Optimization (PPO)",
+      "actor": {
+        "input_size": 50,
+        "hidden_layers": [
+          128,
+          64
+        ],
+        "output_size": 3,
+        "purpose": "Policy \u03c0(a|s)"
+      },
+      "critic": {
+        "input_size": 50,
+        "hidden_layers": [
+          128,
+          64
+        ],
+        "output_size": 1,
+        "purpose": "Value V(s)"
+      }
+    },
+    "ml_ensemble": {
+      "type": "Multi-Model Ensemble",
+      "models": [
+        "XGBoost",
+        "RandomForest",
+        "GradientBoosting",
+        "MLP",
+        "SVM"
+      ],
+      "voting": "Weighted Average",
+      "purpose": "Classification & Regression"
+    }
+  },
+  "data_flow": {
+    "input": "Market Data (XAUUSD, EURUSD)",
+    "preprocessing": "50 Technical Indicators",
+    "ai_processing": "Multi-Model Analysis",
+    "supervision": "OMEGA AI Risk Management",
+    "output": "Trade Decision (BUY/SELL/HOLD)"
+  },
+  "files_exported": [
+    "neural_network_architecture.png",
+    "neural_network_architecture.pdf",
+    "confidence_dashboard.png",
+    "onnx_exports/q_network.onnx",
+    "onnx_exports/actor_network.onnx",
+    "onnx_exports/critic_network.onnx"
+  ]
+}

@@ -1,0 +1,12 @@
+HOW TO ENABLE AUTOSTART FOR AEGIS-GOLD
+=====================================
+
+To make your Trading Dashboard appear automatically when you open your laptop:
+
+1. Right-click the file "run_aegis.bat" in this folder.
+2. Select "Show more options" -> "Create shortcut" (or just "Create shortcut").
+3. Press "Windows Key + R" on your keyboard.
+4. Type "shell:startup" and press Enter.
+5. Move the shortcut you created into the window that just opened.
+
+That's it! Next time you open your laptop and log in, your MetaTrader 5, Bot Backend, and Dashboard will all start automatically.

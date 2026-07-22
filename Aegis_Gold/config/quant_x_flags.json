@@ -1,0 +1,33 @@
+{
+  "_comment": "AEGIS QUANT X — Feature Flags. Set to true to enable each module. All default false: the existing system runs unchanged when every flag is off.",
+
+  "data_integrity":           false,
+  "macro_event_context":      false,
+  "extended_features":        false,
+  "extended_regime":          false,
+  "conformal_prediction":     false,
+  "hmm_regime_model":         false,
+  "ensemble_disagreement":    false,
+  "autoencoder_anomaly":      false,
+  "meta_labeler":             false,
+  "offline_rl":               true,
+  "decision_fusion_v2":       true,
+  "ai_supervisor_macro_veto": false,
+  "volatility_scaled_lot":    false,
+  "cvar_risk":                false,
+  "margin_buffer_check":      false,
+  "volatility_circuit_breaker": false,
+  "execution_integrity":      false,
+  "champion_human_gate":      true,
+  "walk_forward_validation":  false,
+  "shap_explainability":      false,
+  "scheduled_digest":         false,
+  "digest_utc_hour":          6,
+  "chaos_testing":            false,
+  "heartbeat_watchdog_v2":    false,
+  "secrets_audit":            true,
+
+  "_module_extensions": "Extensions added by Aegis-Gold v6 upgrade",
+  "quant_features":           false,
+  "kelly_sizing":             false
+}

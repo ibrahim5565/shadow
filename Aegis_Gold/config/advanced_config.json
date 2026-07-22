@@ -1,0 +1,39 @@
+{
+  "neural_architecture": {
+    "type": "advanced_transformer_rl",
+    "hidden_size": 512,
+    "n_heads": 8,
+    "n_layers": 6,
+    "use_attention": true,
+    "use_meta_learning": true,
+    "use_risk_estimation": true
+  },
+  "training": {
+    "learning_rate": 0.0001,
+    "batch_size": 64,
+    "buffer_size": 100000,
+    "prioritized_replay": true,
+    "double_dqn": true,
+    "dueling_network": true,
+    "soft_update_tau": 0.005
+  },
+  "never_pause": {
+    "enabled": true,
+    "force_continuous": true,
+    "override_all_stops": true,
+    "ignore_pause_conditions": true,
+    "max_consecutive_losses": 999999,
+    "daily_loss_limit": 999999999
+  },
+  "telegram": {
+    "instant_responses": true,
+    "response_delay_ms": 100,
+    "auto_monitoring": true,
+    "command_override_pause": true
+  },
+  "confidence": {
+    "threshold": 50,
+    "ensemble_voting": true,
+    "risk_aware_decisions": true
+  }
+}

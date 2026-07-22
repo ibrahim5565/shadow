@@ -1,0 +1,40 @@
+{
+  "upgrade_timestamp": "2026-07-14T21:37:30.263595",
+  "version": "Advanced AI v2.0",
+  "features_added": [
+    "Transformer-based neural networks with multi-head attention",
+    "Dueling Double DQN with prioritized experience replay",
+    "Advanced PPO with entropy regularization and risk estimation",
+    "Meta-learning for rapid market adaptation",
+    "Never Pause Enforcer - overrides ALL stop conditions",
+    "Advanced Telegram controller with instant responses",
+    "Risk-aware decision making with confidence ensemble",
+    "GPU-optimized training with cosine annealing"
+  ],
+  "confidence_changes": {
+    "old_threshold": "80%",
+    "new_threshold": "50%",
+    "impact": "Significantly more trades per day"
+  },
+  "never_pause_features": [
+    "Overrides all pause conditions",
+    "Removes pause files automatically",
+    "Forces continuous trading 24/7",
+    "Ignores consecutive loss limits",
+    "Disables drawdown protection pauses",
+    "Blocks manual and emergency pauses"
+  ],
+  "telegram_improvements": [
+    "Instant command responses (100ms)",
+    "Advanced command set with 15+ commands",
+    "Real-time status monitoring",
+    "Never-pause command overrides",
+    "Performance metrics and neural network info"
+  ],
+  "neural_architecture": {
+    "dqn": "Dueling Double DQN with Transformer attention",
+    "actor_critic": "Advanced PPO with meta-learning",
+    "ensemble": "Multi-model ensemble with risk estimation",
+    "features": "50 technical indicators + attention mechanisms"
+  }
+}

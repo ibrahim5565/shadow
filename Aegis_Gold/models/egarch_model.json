@@ -1,0 +1,23 @@
+{
+  "model_type": "EGARCH(1,1)",
+  "fitted_at": "2026-07-20T14:00:08.671931+00:00",
+  "sample_size": 4999,
+  "parameters": {
+    "mu": -0.003963534400039259,
+    "omega": -0.3874882123337687,
+    "alpha[1]": 0.23236952432536767,
+    "gamma[1]": 0.01134211557599227,
+    "beta[1]": 0.914094063098037
+  },
+  "log_likelihood": 4935.64,
+  "aic": -9861.29,
+  "bic": -9828.7,
+  "walk_forward_metrics": {
+    "mae": 0.0463,
+    "rmse": 0.0868,
+    "qlike": -0.2589,
+    "n_evals": 70,
+    "mean_forecast_vol": 0.0949,
+    "mean_realized_vol": 0.0592
+  }
+}
