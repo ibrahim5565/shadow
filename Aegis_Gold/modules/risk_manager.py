@@ -6,6 +6,7 @@ Aegis-Gold v6.0 — Risk Manager
 import os
 import time
 import json
+import math
 import logging
 from collections import deque
 from datetime import datetime, timezone
@@ -557,39 +558,156 @@ class RiskManager:
 
     # ── QUANT X Extensions (non-destructive) ────────────────────
 
-    def volatility_scaled_lot(self, symbol: str, current_atr: float, base_lot: float) -> float:
+    def calculate_position_size(
+        self,
+        symbol: str,
+        sl_points: float,
+        equity: float = 0.0,
+        risk_pct: float = 0.01,
+        fixed_risk_usd: float = 0.0
+    ) -> float:
         """
-        Computes volatility-scaled position sizing.
-        Scales base_lot by (average_atr / current_atr) to normalize risk.
-        Prohibits martingale (never scales up based on losses or drawdown).
+        Computes lot size to target a CONSTANT dollar-risk per trade.
+        Formula: Lot = Target_Dollar_Risk / (SL_points * Point_Value_Per_Lot)
+
+        INVARIANT: A trade with a 500-point SL risks the exact same dollar amount as a trade with a 150-point SL.
+
+        Args:
+            symbol: Trading symbol (e.g. "XAUUSD")
+            sl_points: Stop Loss distance in points (e.g. 150 to 500)
+            equity: Account equity (if 0.0, fetches from gateway or start_equity)
+            risk_pct: Target risk fraction of equity (default 0.01 = 1%)
+            fixed_risk_usd: If > 0, overrides risk_pct to use a fixed dollar risk
+
+        Returns:
+            Lot size rounded to 2 decimal places, clamped between min_lot and max_lot.
+        """
+        if getattr(self, "lot_override", 0.0) > 0.0:
+            return self.lot_override
+
+        sym_cfg = cfg.get_symbol_config(symbol)
+        min_lot = sym_cfg.get("min_lot", 0.01)
+        max_lot = getattr(cfg, "MAX_LOT", 1.0)
+
+        if equity <= 0.0:
+            if self.gateway:
+                try:
+                    acct = self.gateway.get_account_info()
+                    equity = acct.get("equity", 0.0) if acct else 0.0
+                except Exception:
+                    equity = 0.0
+            if equity <= 0.0:
+                equity = getattr(self, "start_equity", 1000.0)
+            if equity <= 0.0:
+                equity = 1000.0
+
+        target_usd = fixed_risk_usd if fixed_risk_usd > 0.0 else (equity * risk_pct)
+        
+        # Point value per 1.0 lot ($ per point for 1.0 lot)
+        # XAUUSD: 1 point ($0.01 price move) = $1.00 per 1.0 lot ($0.01 per 0.01 lot)
+        point_val = 1.0
+
+        if sl_points <= 0 or point_val <= 0:
+            return min_lot
+
+        raw_lot = target_usd / (sl_points * point_val)
+        # Floor round to 2 decimal places to ensure actual risk never exceeds target_usd due to rounding
+        floored_lot = math.floor(raw_lot * 100.0) / 100.0
+        clamped_lot = round(max(min_lot, min(max_lot, floored_lot)), 2)
+        return clamped_lot
+
+    def volatility_scaled_lot(self, symbol: str, current_atr: float, base_lot: float, sl_points: float = 0.0) -> float:
+        """
+        Computes volatility-scaled position sizing targeting constant $-risk.
+        If sl_points > 0, uses SL points directly; otherwise uses ATR-derived points.
         """
         try:
             from config.quant_x_config import QX
+            if sl_points > 0.0:
+                return self.calculate_position_size(symbol=symbol, sl_points=sl_points)
+
             if not QX.flag("volatility_scaled_lot") or current_atr <= 0:
                 return base_lot
-            
-            # Simple scaling factor
-            target_vol = float(QX.get("vol_scaled_target_vol") or 0.01)
-            sym_cfg = cfg.get_symbol_config(symbol)
-            max_lot = sym_cfg.get("max_lot", base_lot)
-            
-            # Retrieve account equity to scale risk
-            acct = self.gateway.get_account_info()
-            equity = acct["equity"] if acct else self.start_equity
-            
-            # Lot size based on atr points converted to dollar risk
-            pip_val = sym_cfg.get("pip_value_per_lot", 1.0)
-            point = self.gateway.symbols_data.get(symbol, {}).get("point", 0.00001)
+
+            acct = self.gateway.get_account_info() if self.gateway else None
+            equity = acct.get("equity", 0.0) if (acct and "equity" in acct) else getattr(self, "start_equity", 1000.0)
+
+            point = 0.01 if "XAU" in symbol.upper() else 0.00001
             atr_pts = current_atr / point if point > 0 else current_atr
-            
-            if atr_pts > 0 and pip_val > 0:
-                # Lot = (equity * target_vol) / (atr_pts * pip_val)
-                scaled_lot = (equity * target_vol) / (atr_pts * pip_val)
-                scaled_lot = round(max(0.01, min(max_lot, scaled_lot)), 2)
-                return scaled_lot
+
+            return self.calculate_position_size(symbol=symbol, sl_points=atr_pts, equity=equity)
         except Exception as e:
             logger.warning(f"Failed to calculate volatility scaled lot: {e}")
-        return base_lot
+            return base_lot
+
+
+    def atr_scaled_sl_tp(self, symbol: str, atr_pts: float, confidence: int = 50) -> dict:
+        """
+        Returns ATR-regime-aware SL and TP distances in points (Phase 2).
+        SL = clamp(ATR(14) * k, 150, 400) points.
+        Scalp TP floor = 350 to 600 points to clear broker spread drag.
+
+        Args:
+            symbol:     Trading symbol (e.g. "XAUUSD")
+            atr_pts:    Current ATR in points (pass 0.0 to use safe defaults)
+            confidence: Brain confidence score — higher confidence extends TP slightly
+
+        Returns:
+            {"sl_pts": int, "tp_pts": int, "rr_ratio": float, "regime": str}
+        """
+        is_gold = ("XAU" in symbol.upper())
+
+        if is_gold:
+            sl_floor = 150  # 150 pts ($1.50 Gold move) - sits outside 1-minute noise
+            sl_cap   = 400  # 400 pts ($4.00 Gold move)
+            tp_floor = 350  # 350 pts ($3.50 Gold move) - clears 15-35pt spread drag
+            tp_cap   = 600  # 600 pts ($6.00 Gold move max scalp target)
+
+            k_multiplier = 1.8  # k tuned against Phase 0 MAE data
+            if atr_pts > 0:
+                raw_sl = atr_pts * k_multiplier
+                sl = int(max(sl_floor, min(sl_cap, raw_sl)))
+                
+                # Scalp R:R ratio = 1.8x to 2.2x depending on confidence
+                rr_target = 1.8 if confidence < 70 else 2.2
+                raw_tp = sl * rr_target
+                tp = int(max(tp_floor, min(tp_cap, raw_tp)))
+                regime = "atr_scaled"
+            else:
+                regime = "default_safe"
+                sl = sl_floor  # 150 pts
+                tp = tp_floor  # 350 pts
+
+            if confidence >= 70:
+                tp = min(tp_cap, tp + 50)
+
+        else:
+            sl_floor = 40
+            sl_cap   = 120
+            tp_floor = 80
+            tp_cap   = 200
+
+            if atr_pts > 0:
+                regime = "atr_scaled"
+                sl = int(max(sl_floor, min(sl_cap, atr_pts * 1.5)))
+                tp = int(max(tp_floor, min(tp_cap, sl * 1.8)))
+            else:
+                regime = "default"
+                sl = sl_floor
+                tp = tp_floor
+
+        # Hard guarantees
+        sl = max(sl, sl_floor)
+        tp = max(tp, int(sl * 1.5))
+        rr = round(tp / sl, 2) if sl > 0 else 0.0
+
+        logger.debug(
+            "[RiskMgr] atr_scaled_sl_tp %s atr=%.1fpts regime=%s sl=%dpts tp=%dpts rr=%.2f",
+            symbol, atr_pts, regime, sl, tp, rr
+        )
+        return {"sl_pts": sl, "tp_pts": tp, "rr_ratio": rr, "regime": regime}
+
+
 
     def cvar_estimate(self, alpha: float = 0.05) -> float:
         """
