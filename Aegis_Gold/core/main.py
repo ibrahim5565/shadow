@@ -1839,6 +1839,12 @@ async def main_loop():
             # ── 11b. Periodic Safety Validation Checks (every 20 scans) ───────
             if loop_count % 20 == 0:
                 try:
+                    from brain.naked_position_monitor import check_and_protect_open_positions
+                    check_and_protect_open_positions(gateway, telegram)
+                except Exception as _np_ex:
+                    logger.error(f"[SAFETY] Naked position check error: {_np_ex}")
+
+                try:
                     from brain.drift_monitor import get_drift_monitor
                     from brain.calibration import get_calibration_monitor
                     _drift_mon = get_drift_monitor()
@@ -2475,6 +2481,12 @@ def main():
         _validate_kelly_flag()
     except Exception as _kv_ex:
         logger.warning("[KELLY GATE] Validation skipped due to error: %s", _kv_ex)
+
+    # MANDATORY BROKER-SIDE HARD SL FLOOR ASSERTION
+    if not gateway.verify_sl_enforcement():
+        logger.critical("☠️ [CRITICAL SAFETY FAILURE] Broker-side hard SL enforcement check failed! Refusing to start bot.")
+        print("☠️ [CRITICAL SAFETY FAILURE] Broker-side hard SL enforcement check failed! Refusing to start bot.")
+        sys.exit(1)
 
     try:
         asyncio.run(main_loop())

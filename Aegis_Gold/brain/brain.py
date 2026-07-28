@@ -11,6 +11,8 @@ User Priority: Take every trade >= 50% confidence (50% display = 50% gate = TRAD
 import logging
 import statistics
 import json
+import pandas as pd
+import numpy as np
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from config import settings as cfg
@@ -121,6 +123,34 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
     lot      = _calc_lot(sym_cfg, risk_mgr)
     curr_rsi = 50.0
 
+    # Pre-compute ATR for SL/TP sizing (used by all paths below)
+    atr_estimate = 0.0
+    try:
+        if candles_m5 is not None and len(candles_m5) >= 14:
+            def _extract_series(candles, key_name, tuple_idx):
+                res = []
+                for c in candles:
+                    if isinstance(c, dict):
+                        res.append(float(c[key_name]))
+                    elif hasattr(c, key_name):
+                        res.append(float(getattr(c, key_name)))
+                    else:
+                        res.append(float(c[tuple_idx]))
+                return res
+
+            _cl = _extract_series(candles_m5, "close", 4)
+            _hi = _extract_series(candles_m5, "high", 2)
+            _lo = _extract_series(candles_m5, "low", 3)
+            _atrs = ATR(_hi, _lo, _cl, 14)
+            atr_price = _atrs[-1] if _atrs else 0.0
+            atr_estimate = (atr_price / point) if (point > 0 and atr_price > 0) else 0.0
+    except Exception as _atr_err:
+        logger.warning(f"[{symbol}] ATR calculation error in brain: {_atr_err}")
+        atr_estimate = 0.0
+
+    if atr_estimate <= 0.0:
+        atr_estimate = 150.0 if ("XAU" in symbol.upper() or "GOLD" in symbol.upper()) else 40.0
+
     # RSI for dashboard (best-effort)
     try:
         cl = ([c["close"] for c in candles_m5]
@@ -147,14 +177,23 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         for t in unified_dec.thought_log:
             thoughts.append(t)
             
-        if unified_dec.action == "TRADE" and unified_dec.confidence >= 55:
+        if unified_dec.action == "TRADE" and unified_dec.confidence >= 50:
             logger.info(f"🧠 [{symbol}] UNIFIED QUANT AI NEURAL BRAIN SIGNAL: {unified_dec.direction} ({unified_dec.confidence}% conf)")
+            # Compute ATR-scaled SL/TP — SL is never zero
+            try:
+                _u_atr_pts = getattr(unified_dec, "atr_estimate", 0.0) or atr_estimate
+                _u_exits = risk_mgr.atr_scaled_sl_tp(symbol, _u_atr_pts, unified_dec.confidence)
+                _u_sl = _u_exits["sl_pts"]
+                _u_tp = _u_exits["tp_pts"]
+                _u_rr = _u_exits["rr_ratio"]
+            except Exception:
+                _u_sl, _u_tp, _u_rr = 50, 65, 1.3   # safe gold defaults
             return Decision(
                 action="TRADE",
                 direction=unified_dec.direction,
                 lot=lot,
-                tp_points=0,  # Dynamic TP engine manages targets
-                sl_points=0,  # Dynamic SL engine manages stops
+                tp_points=_u_tp,
+                sl_points=_u_sl,
                 confidence=unified_dec.confidence,
                 grade="A+" if unified_dec.confidence >= 70 else "A",
                 regime="UNIFIED_QUANT_AI",
@@ -164,6 +203,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
                 entry_score=unified_dec.confidence,
                 reason=unified_dec.reasoning,
                 pattern="NEURAL_TRANSFORMER_DQN",
+                rr_ratio=_u_rr,
                 adx_val=0.0,
                 rsi_val=curr_rsi,
                 thought_log=thoughts,
@@ -299,9 +339,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
 
     # Structure
     try:
-        curr_px = (ticks[-1]["bid"] if len(ticks) > 0 else
-                   (candles_m5[-1]["close"] if isinstance(candles_m5[-1], dict)
-                    else candles_m5[-1][4]))
+        from brain.candle_utils import parse_closes
+        curr_px = (ticks[-1]["bid"] if len(ticks) > 0 else parse_closes(candles_m5)[-1])
         structure = analyze_structure(candles_m5, curr_px, regime.trend, point)
     except Exception as e:
         logger.warning(f"[{symbol}] Structure error: {e}")
@@ -352,7 +391,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         "CONFIDENCE", f"{total:.0f}% → {grade}", total >= 50.0))
 
     # ── Gates ────────────────────────────────────────────────
-    if not session_clear:
+    if not session_clear and not (getattr(cfg, "ABSOLUTE_NEVER_PAUSE", False) or getattr(cfg, "FORCE_CONTINUOUS_TRADING", False)):
         return Decision(
             action="WAIT", direction=direction,
             confidence=int(total), grade=grade,
@@ -411,10 +450,19 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         )
 
     # ── Scalp trade approved ──────────────────────────────────
+    # Compute ATR-scaled SL/TP — SL is never zero
+    try:
+        _s_exits = risk_mgr.atr_scaled_sl_tp(symbol, atr_estimate, int(total))
+        _s_sl  = _s_exits["sl_pts"]
+        _s_tp  = _s_exits["tp_pts"]
+        _s_rr  = _s_exits["rr_ratio"]
+    except Exception:
+        _s_sl, _s_tp, _s_rr = 50, 65, 1.3   # safe gold defaults
+
     mode_name = f"SCALP_{scalp_ctrl.upper()}"
     final = (
         f"📈 SCALP TRADE | conf={total:.0f}% {grade} | "
-        f"{direction} {symbol} | Lot:{lot} | {mode_name}"
+        f"{direction} {symbol} | Lot:{lot} | SL:{_s_sl}pts TP:{_s_tp}pts R:R:{_s_rr} | {mode_name}"
     )
     logger.info(f"[{symbol}] {final}")
 
@@ -422,8 +470,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         action="TRADE",
         direction=direction,
         lot=lot,
-        tp_points=0,   # managed by exit engine
-        sl_points=0,   # managed by exit engine
+        tp_points=_s_tp,
+        sl_points=_s_sl,
         confidence=int(total),
         grade=grade,
         regime=regime.type,
@@ -433,7 +481,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         entry_score=entry.timing_score,
         reason=final,
         pattern=entry.reason,
-        rr_ratio=0.0,
+        rr_ratio=_s_rr,
         news_clear=True,
         mode=mode_name,
         adx_val=adx_val,
@@ -494,13 +542,21 @@ def get_rl_agent_challenger():
 # Public wrapper — crash-safe
 # ─────────────────────────────────────────────────────────────
 
-def decide(ticks, candles_m5, account: dict, risk_mgr, session: str,
-           spread: float, point: float, symbol: str = "XAUUSD",
-           candles_m1=None) -> Decision:
+def decide(ticks=None, candles_m5=None, account: dict = None, risk_mgr=None, session: str = "LONDON",
+           spread: float = 15.0, point: float = 0.01, symbol: str = "XAUUSD",
+           candles_m1=None, current_price=None, **kwargs) -> Decision:
     """
     Bulletproof wrapper. Orchestrates the Aegis Quant X execution workflow
     when flags are enabled; falls back fully to v8.0-v9.0 trading loop when disabled.
     """
+    if isinstance(ticks, (list, pd.DataFrame)) and candles_m5 is None:
+        candles_m5 = ticks
+        ticks = []
+    if ticks is None:
+        ticks = []
+    if account is None:
+        account = {"equity": 10000.0, "balance": 10000.0}
+
     from config.quant_x_config import QX
 
     # ─────────────────────────────────────────────────────────────

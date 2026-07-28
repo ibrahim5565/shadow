@@ -40,8 +40,8 @@ SYMBOLS_CONFIG = {
         "target_profit": 5.00,          # FIRST 200 MODE: $5 minimum profit (was $0.30)
         "min_tp_points": 0,             # NO TP ON ORDER - Dynamic only
         "max_tp_points": 0,             # NO TP ON ORDER - Dynamic only
-        "min_sl_points": 0,             # NO SL ON ORDER - Risk managed dynamically
-        "max_sl_points": 0,             # NO SL ON ORDER - Risk managed dynamically
+        "min_sl_points": 40,            # Mandatory Hard SL Floor (15 pips)
+        "max_sl_points": 120,           # Max SL points
         "spread_limits": {"ASIAN": 12, "LONDON": 8, "NY": 12, "OVERLAP": 15},
         "breakeven_trigger_pts": 2,
         "trail_trigger_pts": 3,
@@ -62,8 +62,8 @@ SYMBOLS_CONFIG = {
         "target_profit": 10.00,         # FIRST 200 MODE: $10 minimum profit for Gold (was $0.30)
         "min_tp_points": 0,             # NO TP ON ORDER - Dynamic only
         "max_tp_points": 0,             # NO TP ON ORDER - Dynamic only
-        "min_sl_points": 0,             # NO SL ON ORDER - Risk managed dynamically
-        "max_sl_points": 0,             # NO SL ON ORDER - Risk managed dynamically
+        "min_sl_points": 150,           # Mandatory Hard SL Floor ($1.50 Gold move)
+        "max_sl_points": 400,           # Max SL points
         "spread_limits": {"ASIAN": 35, "LONDON": 30, "NY": 35, "OVERLAP": 40},  # RELAXED: Allow wider Gold spreads
         "breakeven_trigger_pts": 15,    # Move to BE at 15pts (guarantees real move before locking profit)
         "trail_trigger_pts": 15,        # Start trailing at 15pts for Gold
@@ -203,7 +203,7 @@ NO_DUPLICATE_DIRECTION_SEC     = 0      # Allow immediate direction switches - n
 TRADE_COOLDOWN_ENABLED         = False  # Disable all cooldowns completely
 
 # ── SMC ENGINE SETTINGS ───────────────────────────────────────────────────────
-SMC_SIGNAL_THRESHOLD   = 55    # Minimum SMC score to take a trade (0-100)
+SMC_SIGNAL_THRESHOLD   = 50    # Minimum SMC score to take a trade (0-100)
                                # Breakdown: BOS/CHoCH(20-30) + OB(25) + Sweep(25) + PO3(15) + FVG(10)
 SMC_OB_LOOKBACK        = 30    # Candles to look back for Order Block detection
 SMC_SWING_WINDOW       = 3     # Candles each side for swing high/low detection

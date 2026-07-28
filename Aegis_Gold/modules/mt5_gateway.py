@@ -299,8 +299,83 @@ class MT5Gateway:
 
     # ── order execution ────────────────────────────────────────
 
+    def build_order_request(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int, price: float = None, type_filling: int = None) -> dict:
+        """
+        Constructs order request payload with MANDATORY broker-side hard SL enforcement.
+        Under NO circumstance will sl_pts <= 0 produce a request with sl = 0.0.
+        """
+        data = self.symbols_data.get(symbol, {
+            "point": 0.01 if "XAU" in symbol.upper() else 0.00001,
+            "digits": 2 if "XAU" in symbol.upper() else 5
+        })
+        point = data["point"]
+        digits = data["digits"]
+        
+        # Enforce Hard SL Floor if sl_pts is <= 0 or missing
+        is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+        default_floor_pts = 150 if is_gold else 40
+        
+        if sl_pts is None or sl_pts <= 0:
+            logger.error(
+                f"🚨 [HARD SL FLOOR ENFORCED] Order for {symbol} requested with sl_pts={sl_pts}. "
+                f"Floored to {default_floor_pts}pts to prevent naked broker position."
+            )
+            self._alert(f"🚨 <b>[HARD SL FLOOR FIRED]</b> Order for {symbol} sl_pts={sl_pts} floored to {default_floor_pts}pts.")
+            sl_pts = default_floor_pts
+
+        if price is None:
+            tick = mt5.symbol_info_tick(symbol)
+            if tick is None:
+                raise ValueError(f"Cannot get tick for symbol {symbol}")
+            price = tick.ask if direction == "BUY" else tick.bid
+
+        if direction == "BUY":
+            tp = price + tp_pts * point if tp_pts > 0 else 0.0
+            sl = price - sl_pts * point
+            order_type = mt5.ORDER_TYPE_BUY
+        else:
+            tp = price - tp_pts * point if tp_pts > 0 else 0.0
+            sl = price + sl_pts * point
+            order_type = mt5.ORDER_TYPE_SELL
+
+        sl_rounded = round(sl, digits)
+        if sl_rounded <= 0.0:
+            raise ValueError(f"CRITICAL SAFETY VIOLATION: Calculated SL price {sl_rounded} is invalid for {symbol}")
+
+        if type_filling is None:
+            type_filling = self._get_filling_mode(symbol)
+
+        return {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": order_type,
+            "price": round(price, digits),
+            "tp": round(tp, digits) if tp_pts > 0 else 0.0,
+            "sl": sl_rounded,  # GUARANTEED NON-ZERO
+            "magic": cfg.MAGIC_NUMBER,
+            "deviation": 5,
+            "type_filling": type_filling,
+            "type_time": mt5.ORDER_TIME_GTC,
+        }
+
+    def verify_sl_enforcement(self) -> bool:
+        """
+        Startup/pre-trade self-check: Verifies that any order built with sl_pts <= 0
+        is floored to a non-zero SL price and never produces sl=0.0.
+        """
+        for test_sym in ["XAUUSD", "EURUSD"]:
+            req = self.build_order_request(
+                symbol=test_sym, direction="BUY", lot=0.01, tp_pts=100, sl_pts=0, price=2000.0 if "XAU" in test_sym else 1.1000, type_filling=mt5.ORDER_FILLING_FOK
+            )
+            if req.get("sl", 0.0) == 0.0:
+                logger.critical(f"❌ [SL SAFETY VERIFICATION FAILED] Symbol {test_sym} generated sl=0.0 payload!")
+                return False
+        logger.info("✅ [SL SAFETY VERIFICATION PASSED] Mandatory broker-side SL floor active for all symbols.")
+        return True
+
     def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int):
-        """Execute market order for a specific symbol."""
+        """Execute market order for a specific symbol with mandatory hard SL enforcement."""
         try:
             tick = mt5.symbol_info_tick(symbol)
             if tick is None or symbol not in self.symbols_data:
@@ -308,35 +383,11 @@ class MT5Gateway:
 
             data = self.symbols_data[symbol]
             point = data["point"]
-            digits = data["digits"]
+            price = tick.ask if direction == "BUY" else tick.bid
 
-            if direction == "BUY":
-                price = tick.ask
-                tp = price + tp_pts * point
-                sl = price - sl_pts * point
-                order_type = mt5.ORDER_TYPE_BUY
-            else:
-                price = tick.bid
-                tp = price - tp_pts * point
-                sl = price + sl_pts * point
-                order_type = mt5.ORDER_TYPE_SELL
-
-            # Detect best filling mode for this symbol
-            type_filling = self._get_filling_mode(symbol)
-
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": lot,
-                "type": order_type,
-                "price": round(price, digits),
-                "tp": round(tp, digits) if tp_pts > 0 else 0.0,
-                "sl": round(sl, digits) if sl_pts > 0 else 0.0,
-                "magic": cfg.MAGIC_NUMBER,
-                "deviation": 5,
-                "type_filling": type_filling,
-                "type_time": mt5.ORDER_TIME_GTC,
-            }
+            request = self.build_order_request(
+                symbol=symbol, direction=direction, lot=lot, tp_pts=tp_pts, sl_pts=sl_pts, price=price
+            )
 
             t0 = time.perf_counter()
             result = mt5.order_send(request)
@@ -344,7 +395,7 @@ class MT5Gateway:
 
             if result and result.retcode == mt5.TRADE_RETCODE_DONE:
                 slippage = abs(result.price - price) / point if point else 0
-                logger.info(f"ORDER {direction} {symbol} lot={lot} latency={lat:.0f}ms")
+                logger.info(f"ORDER {direction} {symbol} lot={lot} sl={request['sl']} latency={lat:.0f}ms")
                 return result, lat, slippage
             
             err = result.comment if result else mt5.last_error()
