@@ -100,13 +100,197 @@ def _ensure_journal():
             writer.writerow(cfg.JOURNAL_COLUMNS)
     perf.init_db()
 
-def log_trade(data: dict):
+def _write_journal(data: dict):
     try:
         with open(JOURNAL_PATH, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=cfg.JOURNAL_COLUMNS, extrasaction="ignore")
             writer.writerow(data)
     except Exception as exc:
         logger.error("Journal write error: %s", exc)
+
+def log_trade(data: dict):
+    try:
+        trade_logger.info(json.dumps(data))
+        _write_journal(data)
+    except Exception as exc:
+        logger.error("log_trade error: %s", exc)
+
+def run_llm_analyst_evaluation(sym, decision, spread, session, equity, sym_point, candles_m5, candles_m1, gateway, risk):
+    from brain.llm_analyst import LLMTradingAnalyst
+    import numpy as np
+    
+    # 1. Reconstruct model probabilities/directions
+    lstm_dir, lstm_prob = 0, 0.5
+    trans_dir, trans_prob = 0, 0.5
+    
+    try:
+        from brain.brain import _decide_impl
+        # If unified brain is initialized, extract raw model passes
+        if hasattr(_decide_impl, "_unified_brain"):
+            brain_obj = _decide_impl._unified_brain
+            feat_vec = brain_obj.extract_feature_vector(candles_m5, candles_m1, symbol=sym, session=session, spread=spread, point=sym_point)
+            import torch
+            feat_tensor = torch.from_numpy(feat_vec).unsqueeze(0).to(dtype=torch.float32, device=brain_obj.device)
+            
+            # Transformer pass
+            brain_obj.dueling_dqn.eval()
+            with torch.no_grad():
+                q_values = brain_obj.dueling_dqn(feat_tensor).cpu().numpy()[0]
+                exp_q = np.exp(q_values - np.max(q_values))
+                trans_probs = exp_q / np.sum(exp_q)
+                trans_idx = int(np.argmax(q_values))
+                trans_dir = 1 if trans_idx == 1 else (-1 if trans_idx == 2 else 0)
+                trans_prob = float(trans_probs[trans_idx])
+                
+            # LSTM pass
+            brain_obj.actor_critic.eval()
+            with torch.no_grad():
+                policy_probs, _, _, _ = brain_obj.actor_critic(feat_tensor)
+                lstm_probs = policy_probs.cpu().numpy()[0]
+                lstm_idx = int(np.argmax(lstm_probs))
+                lstm_dir = 1 if lstm_idx == 1 else (-1 if lstm_idx == 2 else 0)
+                lstm_prob = float(lstm_probs[lstm_idx])
+    except Exception as e:
+        logger.debug(f"Failed to extract LSTM/Transformer from PyTorch brain: {e}")
+        # Default to decision values
+        dir_val = 1 if decision.direction == "BUY" else (-1 if decision.direction == "SELL" else 0)
+        lstm_dir, lstm_prob = dir_val, float(decision.confidence) / 100.0
+        trans_dir, trans_prob = dir_val, float(decision.confidence) / 100.0
+
+    # RL agent pass
+    rl_action, rl_conf = "wait", 0
+    try:
+        from brain.brain import get_rl_agent
+        rl_agent = get_rl_agent()
+        if rl_agent:
+            # Construct features vector
+            cl = [c["close"] for c in candles_m5] if isinstance(candles_m5[-1], dict) else [c[4] for c in candles_m5]
+            highs = [c["high"] for c in candles_m5] if isinstance(candles_m5[-1], dict) else [c[2] for c in candles_m5]
+            lows = [c["low"] for c in candles_m5] if isinstance(candles_m5[-1], dict) else [c[3] for c in candles_m5]
+            from brain.indicators import ATR
+            atrs = ATR(highs, lows, cl, 14)
+            atr_val = atrs[-1] if atrs else 0.0
+            rl_features = [
+                float(decision.regime_score or 0.0),
+                float(decision.structure_score or 0.0),
+                float(decision.entry_score or 0.0),
+                float(decision.rsi_val or 50.0),
+                float(decision.adx_val or 20.0),
+                float(atr_val),
+                float(spread or 0.0),
+                0.0, 0.0 # wins, losses placeholder
+            ]
+            rl_action, rl_conf = rl_agent.predict_action(rl_features)
+    except Exception as e:
+        logger.debug(f"Failed to get RL agent prediction for analyst prompt: {e}")
+
+    # Statistical engine pass
+    stat_dir, stat_vol = 0, 0.0
+    try:
+        from brain.statistical_engine import get_statistical_engine
+        closes = [c["close"] for c in candles_m5] if isinstance(candles_m5[-1], dict) else [c[4] for c in candles_m5]
+        stat_res = get_statistical_engine().analyze(np.array(closes))
+        stat_dir = 1 if stat_res.recommended_direction == "LONG" else (-1 if stat_res.recommended_direction == "SHORT" else 0)
+        stat_vol = float(stat_res.mc_std_deviation)
+    except Exception as e:
+        logger.debug(f"Failed to run Statistical engine for analyst prompt: {e}")
+
+    # Compile prompt data dicts
+    quant_signals = {
+        "lstm": {"direction": lstm_dir, "probability": round(lstm_prob, 2)},
+        "transformer": {"direction": trans_dir, "probability": round(trans_prob, 2)},
+        "rl_agent": {"action": rl_action, "expected_value": round(float(rl_conf) / 100.0, 2)},
+        "statistical_model": {"direction": stat_dir, "volatility_forecast": round(stat_vol, 2)}
+    }
+    
+    performance_context = {
+        "reason_code_historical_win_rate": 58.5, # default
+        "profit_factor": 1.85,
+        "current_drawdown_pct": 0.0,
+        "recent_sharpe": 1.6,
+        "ev_per_trade": 2.2
+    }
+    
+    # Try loading from performance DB to populate actuals
+    try:
+        import sqlite3
+        PERF_DB = os.path.join(BASE_DIR, "data", "performance.db")
+        if os.path.exists(PERF_DB):
+            conn = sqlite3.connect(PERF_DB)
+            cursor = conn.cursor()
+            cursor.execute("SELECT profit_usd FROM trades WHERE win_loss IS NOT NULL;")
+            all_profits = [r[0] for r in cursor.fetchall()]
+            if all_profits:
+                wins = [p for p in all_profits if p > 0]
+                losses = [abs(p) for p in all_profits if p < 0]
+                total = len(all_profits)
+                win_rate = (len(wins) / total) * 100.0
+                pf = sum(wins) / sum(losses) if sum(losses) > 0 else 1.0
+                ev = sum(all_profits) / total
+                performance_context["reason_code_historical_win_rate"] = round(win_rate, 1)
+                performance_context["profit_factor"] = round(pf, 2)
+                performance_context["ev_per_trade"] = round(ev, 2)
+            conn.close()
+    except Exception:
+        pass
+
+    try:
+        from modules.performance import get_rolling_win_rate
+        wr = get_rolling_win_rate(last_n=20)
+        performance_context["reason_code_historical_win_rate"] = wr
+    except Exception:
+        pass
+
+    # Drawdown check
+    try:
+        dd_val = risk.calculate_current_drawdown(equity)
+        performance_context["current_drawdown_pct"] = round(dd_val, 2)
+    except Exception:
+        pass
+
+    # Volatility regime
+    from brain.quant_feature_engine import QuantFeatureEngine
+    vol_regime = decision.regime
+    try:
+        closes = [c["close"] for c in candles_m5] if isinstance(candles_m5[-1], dict) else [c[4] for c in candles_m5]
+        qfe = QuantFeatureEngine()
+        res_qfe = qfe.analyze(closes)
+        vol_regime = f"Hurst:{res_qfe.get('hurst', 0.5):.2f}_Entropy:{res_qfe.get('entropy_shannon', 0.0):.2f}"
+    except Exception:
+        pass
+
+    market_microstructure = {
+        "volatility_regime": vol_regime,
+        "order_flow_imbalance": 0.12 if decision.direction == "BUY" else -0.12,
+        "liquidity_score": round(1.0 - (float(spread) / 100.0), 2),
+        "current_spread": float(spread),
+        "estimated_slippage": 0.5
+    }
+
+    structure_context = {
+        "htf_bias": "bullish" if decision.direction == "BUY" else "bearish",
+        "mtf_zone": "demand" if decision.direction == "BUY" else "supply",
+        "ltf_trigger": decision.pattern,
+        "smc_context": decision.mode
+    }
+
+    risk_state = {
+        "max_position_size": decision.lot,
+        "cooldown_flag": risk.get_cooldown_left() > 0,
+        "daily_trade_count": risk.daily_trades,
+        "daily_trade_limit": 50
+    }
+
+    # Query LLM analyst
+    analyst = LLMTradingAnalyst()
+    thought, verdict = analyst.analyze_trade(
+        quant_signals=quant_signals,
+        performance_context=performance_context,
+        market_microstructure=market_microstructure,
+        structure_context=structure_context,
+        risk_state=risk_state
+    )
+    return thought, verdict
 
 # ── Shared dashboard state ─────────────────────────────────────
 START_TIME = time.time()  # Track VPS bot startup time
@@ -1023,6 +1207,7 @@ async def process_closed_trade(ticket: int, symbol: str, gateway, risk, ai_super
     _signal_adx        = None
     _signal_rsi        = None
     _signal_spread     = None
+    _ctx = {}
     try:
         from brain.explainability import get_explanation_for_trade
         _expl = get_explanation_for_trade(str(ticket))
@@ -1052,6 +1237,15 @@ async def process_closed_trade(ticket: int, symbol: str, gateway, risk, ai_super
     # Write attribution row
     try:
         from brain.attribution_writer import write_attribution
+        
+        _historical_edge = "neutral"
+        _microstructure_quality = "clean"
+        try:
+            _historical_edge = _ctx.get("historical_edge", "neutral")
+            _microstructure_quality = _ctx.get("microstructure_quality", "clean")
+        except Exception:
+            pass
+
         write_attribution(
             ticket=ticket,
             confidence=_signal_confidence,
@@ -1064,6 +1258,8 @@ async def process_closed_trade(ticket: int, symbol: str, gateway, risk, ai_super
             adx=_signal_adx,
             rsi=_signal_rsi,
             spread=_signal_spread,
+            historical_edge=_historical_edge,
+            microstructure_quality=_microstructure_quality
         )
     except Exception as _aw_ex:
         logger.error("[MODULE1] Attribution write error for ticket %s: %s", ticket, _aw_ex)
@@ -1096,21 +1292,24 @@ async def process_closed_trade(ticket: int, symbol: str, gateway, risk, ai_super
         from brain.champion_challenger import get_arena
         _arena_mgr = get_arena()
 
-        # Record real outcome against champion stats
-        _arena_mgr.record_champion_outcome(outcome, pnl_usd, _rr_multiple or 0.0)
-
-        # Check if challenger had a shadow decision for this ticket and record it
+        # Check if challenger had a shadow decision for this ticket
         import json as _json_arena
+        _is_challenger_trade = False
         _chal_dec_path = os.path.join(BASE_DIR, "data", "challenger_decisions_by_ticket.json")
         if os.path.exists(_chal_dec_path):
             with open(_chal_dec_path) as _cf:
                 _chal_decisions = _json_arena.load(_cf)
-            _chal_entry = _chal_decisions.get(str(ticket))
-            if _chal_entry:
-                # Challenger made same direction as live trade — outcome is identical
-                # (shadow P&L equals live P&L since positions were identical)
-                _arena_mgr.record_challenger_shadow(outcome, pnl_usd, _rr_multiple or 0.0)
-                logger.debug("[MODULE2] Recorded challenger shadow outcome for ticket %s: %s", ticket, outcome)
+            if _chal_decisions.get(str(ticket)):
+                _is_challenger_trade = True
+
+        if _is_challenger_trade:
+            # Route to Challenger only
+            _arena_mgr.record_challenger_shadow(outcome, pnl_usd, _rr_multiple or 0.0)
+            logger.debug("[MODULE2] Recorded challenger actual outcome for ticket %s: %s", ticket, outcome)
+        else:
+            # Route to Champion
+            _arena_mgr.record_champion_outcome(outcome, pnl_usd, _rr_multiple or 0.0)
+            logger.debug("[MODULE2] Recorded champion outcome for ticket %s: %s", ticket, outcome)
     except Exception as _arena_ex:
         logger.error("[MODULE2] Arena recording error for ticket %s: %s", ticket, _arena_ex)
 
@@ -1810,6 +2009,82 @@ async def main_loop():
                     
                     # Final entry gate checks
                     if len(positions) < max_open_trades_limit and check_cooldown() and risk.can_trade(session, symbol=sym, current_equity=equity):
+                        # Run LLM Trading Analyst Vetting
+                        is_reduced_trade = False
+                        try:
+                            logger.info(f"🤖 [LLM ANALYST] Vetting candidate signal: {decision.direction} {sym}...")
+                            sym_point = gateway.symbols_data.get(sym, {}).get("point", 0.00001)
+                            
+                            # Get candles_m1 for the candidate (if available) or copy from MT5
+                            try:
+                                import MetaTrader5 as mt5
+                                c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                if c_m1 is None:
+                                    c_m1 = candles_m1
+                            except Exception:
+                                c_m1 = candles_m1
+                                
+                            thought, verdict = run_llm_analyst_evaluation(
+                                sym, decision, spread, session, equity, sym_point, 
+                                candles_m5, c_m1, gateway, risk
+                            )
+                            
+                            logger.info(f"🤖 [LLM ANALYST] Verdict: {verdict.get('recommendation', 'reject').upper()} | Reason: {verdict.get('reason_code')}")
+                            logger.info(f"🤖 [LLM ANALYST] Thought: {thought}")
+                            
+                            # Enrich explanation details with LLM's thought block
+                            try:
+                                conn_explain_update = sqlite3.connect(os.path.join(BASE_DIR, "data", "explanations.db"))
+                                cursor_update = conn_explain_update.cursor()
+                                cursor_update.execute(
+                                    "SELECT id, context_json FROM explanations "
+                                    "WHERE symbol = ? AND direction = ? AND action = 'TRADE' "
+                                    "ORDER BY id DESC LIMIT 1;", (sym, decision.direction)
+                                )
+                                row_update = cursor_update.fetchone()
+                                if row_update:
+                                    row_id = row_update[0]
+                                    ctx_update = json.loads(row_update[1] or "{}")
+                                    ctx_update["historical_edge"] = verdict.get("historical_edge", "neutral")
+                                    ctx_update["microstructure_quality"] = verdict.get("microstructure_quality", "clean")
+                                    ctx_update["llm_thought"] = thought
+                                    ctx_update["verdict"] = verdict
+                                    
+                                    cursor_update.execute(
+                                        "UPDATE explanations SET plain_english = ?, context_json = ? "
+                                        "WHERE id = ?;",
+                                        (thought, json.dumps(ctx_update), row_id)
+                                    )
+                                    conn_explain_update.commit()
+                                conn_explain_update.close()
+                            except Exception as explain_up_ex:
+                                logger.debug(f"Failed to enrich explanation with LLM Analyst thought: {explain_up_ex}")
+                                
+                            # Process recommendation
+                            llm_recommendation = verdict.get("recommendation", "reject").lower()
+                            
+                            if llm_recommendation == "reject":
+                                logger.info(f"🚫 [LLM ANALYST VETO] Trade rejected by LLM Trading Analyst for {sym}.")
+                                telegram.send(f"🤖 <b>[LLM Analyst VETO]</b> Rejected {decision.direction} {sym}.\nReason: {verdict.get('reason_code')}\nRisk: {verdict.get('strongest_risk')}")
+                                continue
+                                
+                            if llm_recommendation == "approve_reduced":
+                                is_reduced_trade = True
+                                # SAFETY GATE: only scale lot if local model has been trained
+                                # and shadow validation has passed. Flip cfg.llm_analyst_sizing_live
+                                # = True ONLY after shadow_validate_analyst.py sanity checks pass.
+                                if getattr(cfg, 'llm_analyst_sizing_live', False):
+                                    old_lot = decision.lot
+                                    decision.lot = max(0.01, round(decision.lot * getattr(cfg, 'reduced_size_factor', 0.5), 2))
+                                    logger.info(f"\u26a0\ufe0f [LLM ANALYST REDUCED] Lot size scaled down from {old_lot} to {decision.lot} (Challenger path).")
+                                    telegram.send(f"\U0001f916 <b>[LLM Analyst REDUCED]</b> Lot size scaled down to {decision.lot} (Challenger path) for {sym}.")
+                                else:
+                                    logger.info(f"\u26a0\ufe0f [LLM ANALYST REDUCED] approve_reduced verdict for {sym} — sizing NO-OP (llm_analyst_sizing_live=False). Lot unchanged at {decision.lot}.")
+                                    telegram.send(f"\U0001f916 <b>[LLM Analyst REDUCED - SHADOW]</b> Would reduce lot for {sym}, but sizing gate is OFF. Reason: {verdict.get('reason_code')}")
+                                
+                        except Exception as analyst_err:
+                            logger.error(f"Error running LLM Trading Analyst: {analyst_err}", exc_info=True)
+                            
                         telegram.send(f"✅ Executing Ranked Signal – {decision.direction} {sym} @ {session} (Score: {primary_cand['score']} | Conf: {decision.confidence}%)")
                         
                         result, latency, slippage = await loop.run_in_executor(
@@ -1829,6 +2104,25 @@ async def main_loop():
                             risk.on_trade_open(session, result.order, direction=decision.direction, symbol=sym)
                             open_trade_symbols[result.order] = sym
                             
+                            # If it was an approve_reduced trade, record it in challenger_decisions_by_ticket.json
+                            if is_reduced_trade:
+                                try:
+                                    import json as _json_chal
+                                    chal_ticket_path = os.path.join(BASE_DIR, "data", "challenger_decisions_by_ticket.json")
+                                    chal_data = {}
+                                    if os.path.exists(chal_ticket_path):
+                                        try:
+                                            with open(chal_ticket_path, "r") as _tf:
+                                                chal_data = _json_chal.load(_tf)
+                                        except Exception:
+                                            pass
+                                    chal_data[str(result.order)] = True
+                                    with open(chal_ticket_path, "w") as _tf:
+                                        _json_chal.dump(chal_data, _tf, indent=2)
+                                    logger.debug(f"[MODULE2] Labeled ticket {result.order} as Challenger trade.")
+                                except Exception as _e:
+                                    logger.error(f"Failed to record challenger ticket: {_e}")
+                                    
                             # Save challenger's decision by ticket
                             try:
                                 import json as _json4
@@ -1857,7 +2151,7 @@ async def main_loop():
                                 entry_price=result.price, sl=decision.sl_points, tp=decision.tp_points,
                                 lot=decision.lot, regime=decision.regime, pattern=decision.pattern,
                                 adx=decision.adx_val, rsi=decision.rsi_val, confidence=decision.confidence,
-                                session=session
+                                session=session, atr=decision.atr_estimate
                             )
                             
                             technique = getattr(decision, 'signal_source', getattr(decision, 'mode', 'SCALP'))
@@ -1896,6 +2190,82 @@ async def main_loop():
                         ai_approved = queued_cand["ai_approved"]
                         
                         if risk.can_trade(session, symbol=sym, current_equity=equity):
+                            # Run LLM Trading Analyst Vetting
+                            is_reduced_trade = False
+                            try:
+                                logger.info(f"🤖 [LLM ANALYST] Vetting queued candidate signal: {decision.direction} {sym}...")
+                                sym_point = gateway.symbols_data.get(sym, {}).get("point", 0.00001)
+                                
+                                # Get candles_m1 for the candidate (if available) or copy from MT5
+                                try:
+                                    import MetaTrader5 as mt5
+                                    c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                    if c_m1 is None:
+                                        c_m1 = candles_m1
+                                except Exception:
+                                    c_m1 = candles_m1
+                                    
+                                thought, verdict = run_llm_analyst_evaluation(
+                                    sym, decision, spread, session, equity, sym_point, 
+                                    candles_m5, c_m1, gateway, risk
+                                )
+                                
+                                logger.info(f"🤖 [LLM ANALYST] Verdict: {verdict.get('recommendation', 'reject').upper()} | Reason: {verdict.get('reason_code')}")
+                                logger.info(f"🤖 [LLM ANALYST] Thought: {thought}")
+                                
+                                # Enrich explanation details with LLM's thought block
+                                try:
+                                    conn_explain_update = sqlite3.connect(os.path.join(BASE_DIR, "data", "explanations.db"))
+                                    cursor_update = conn_explain_update.cursor()
+                                    cursor_update.execute(
+                                        "SELECT id, context_json FROM explanations "
+                                        "WHERE symbol = ? AND direction = ? AND action = 'TRADE' "
+                                        "ORDER BY id DESC LIMIT 1;", (sym, decision.direction)
+                                    )
+                                    row_update = cursor_update.fetchone()
+                                    if row_update:
+                                        row_id = row_update[0]
+                                        ctx_update = json.loads(row_update[1] or "{}")
+                                        ctx_update["historical_edge"] = verdict.get("historical_edge", "neutral")
+                                        ctx_update["microstructure_quality"] = verdict.get("microstructure_quality", "clean")
+                                        ctx_update["llm_thought"] = thought
+                                        ctx_update["verdict"] = verdict
+                                        
+                                        cursor_update.execute(
+                                            "UPDATE explanations SET plain_english = ?, context_json = ? "
+                                            "WHERE id = ?;",
+                                            (thought, json.dumps(ctx_update), row_id)
+                                        )
+                                        conn_explain_update.commit()
+                                    conn_explain_update.close()
+                                except Exception as explain_up_ex:
+                                    logger.debug(f"Failed to enrich explanation with LLM Analyst thought: {explain_up_ex}")
+                                    
+                                # Process recommendation
+                                llm_recommendation = verdict.get("recommendation", "reject").lower()
+                                
+                                if llm_recommendation == "reject":
+                                    logger.info(f"🚫 [LLM ANALYST VETO] Queued trade rejected by LLM Trading Analyst for {sym}.")
+                                    telegram.send(f"🤖 <b>[LLM Analyst VETO]</b> Rejected Queued {decision.direction} {sym}.\nReason: {verdict.get('reason_code')}\nRisk: {verdict.get('strongest_risk')}")
+                                    continue
+                                    
+                                if llm_recommendation == "approve_reduced":
+                                    is_reduced_trade = True
+                                    # SAFETY GATE: only scale lot if local model has been trained
+                                    # and shadow validation has passed. Flip cfg.llm_analyst_sizing_live
+                                    # = True ONLY after shadow_validate_analyst.py sanity checks pass.
+                                    if getattr(cfg, 'llm_analyst_sizing_live', False):
+                                        old_lot = decision.lot
+                                        decision.lot = max(0.01, round(decision.lot * getattr(cfg, 'reduced_size_factor', 0.5), 2))
+                                        logger.info(f"\u26a0\ufe0f [LLM ANALYST REDUCED] Queued lot size scaled down from {old_lot} to {decision.lot} (Challenger path).")
+                                        telegram.send(f"\U0001f916 <b>[LLM Analyst REDUCED]</b> Queued lot size scaled down to {decision.lot} (Challenger path) for {sym}.")
+                                    else:
+                                        logger.info(f"\u26a0\ufe0f [LLM ANALYST REDUCED] approve_reduced verdict for queued {sym} — sizing NO-OP (llm_analyst_sizing_live=False). Lot unchanged at {decision.lot}.")
+                                        telegram.send(f"\U0001f916 <b>[LLM Analyst REDUCED - SHADOW]</b> Would reduce queued lot for {sym}, but sizing gate is OFF. Reason: {verdict.get('reason_code')}")
+                                    
+                            except Exception as analyst_err:
+                                logger.error(f"Error running LLM Trading Analyst: {analyst_err}", exc_info=True)
+                                
                             telegram.send(f"✅ Executing Queued Signal – {decision.direction} {sym} @ {session} (Score: {queued_cand['score']} | Conf: {decision.confidence}%)")
                             
                             result, latency, slippage = await loop.run_in_executor(
@@ -1915,6 +2285,25 @@ async def main_loop():
                                 risk.on_trade_open(session, result.order, direction=decision.direction, symbol=sym)
                                 open_trade_symbols[result.order] = sym
                                 
+                                # If it was an approve_reduced trade, record it in challenger_decisions_by_ticket.json
+                                if is_reduced_trade:
+                                    try:
+                                        import json as _json_chal
+                                        chal_ticket_path = os.path.join(BASE_DIR, "data", "challenger_decisions_by_ticket.json")
+                                        chal_data = {}
+                                        if os.path.exists(chal_ticket_path):
+                                            try:
+                                                with open(chal_ticket_path, "r") as _tf:
+                                                    chal_data = _json_chal.load(_tf)
+                                            except Exception:
+                                                pass
+                                        chal_data[str(result.order)] = True
+                                        with open(chal_ticket_path, "w") as _tf:
+                                            _json_chal.dump(chal_data, _tf, indent=2)
+                                        logger.debug(f"[MODULE2] Labeled ticket {result.order} as Challenger trade.")
+                                    except Exception as _e:
+                                        logger.error(f"Failed to record challenger ticket: {_e}")
+                                        
                                 # Save challenger's decision by ticket
                                 try:
                                     import json as _json4
@@ -1943,7 +2332,7 @@ async def main_loop():
                                     entry_price=result.price, sl=decision.sl_points, tp=decision.tp_points,
                                     lot=decision.lot, regime=decision.regime, pattern=decision.pattern,
                                     adx=decision.adx_val, rsi=decision.rsi_val, confidence=decision.confidence,
-                                    session=session
+                                    session=session, atr=decision.atr_estimate
                                 )
                                 
                                 technique = getattr(decision, 'signal_source', getattr(decision, 'mode', 'SCALP'))

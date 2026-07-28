@@ -39,6 +39,34 @@ def init_db():
                 timestamp TEXT
             )
         """)
+        expected_cols = {
+            "symbol": "TEXT",
+            "direction": "TEXT",
+            "entry_price": "REAL",
+            "exit_price": "REAL",
+            "sl": "REAL",
+            "tp": "REAL",
+            "lot": "REAL",
+            "profit_usd": "REAL",
+            "profit_pips": "REAL",
+            "trade_duration_min": "REAL",
+            "regime": "TEXT",
+            "pattern": "TEXT",
+            "adx_at_entry": "REAL",
+            "rsi_at_entry": "REAL",
+            "ai_confidence": "REAL",
+            "session": "TEXT",
+            "partial_tp_hit": "INTEGER DEFAULT 0",
+            "win_loss": "INTEGER",
+            "timestamp": "TEXT"
+        }
+        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(trades)").fetchall()}
+        for col_name, col_def in expected_cols.items():
+            if col_name not in existing_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
         conn.commit()
         conn.close()
         logger.info("Performance SQLite database initialized successfully.")
@@ -46,7 +74,7 @@ def init_db():
         logger.error(f"Error initializing SQLite database: {e}")
 
 
-def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, pattern, adx, rsi, confidence, session):
+def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, pattern, adx, rsi, confidence, session, atr=0.0):
     """Logs the entry execution parameters of a trade into SQLite and trade_memory."""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -116,6 +144,7 @@ def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, 
             structure="MID_RANGE",
             rsi=rsi or 0.0,
             adx=adx or 0.0,
+            atr=float(atr or 0.0),  # ATR at entry — must be non-zero for replay validity
             session=session or "UNKNOWN",
             tags=json.dumps(tags_list),
             notes=f"Auto-classified trade for pattern: {pattern}"
@@ -152,21 +181,38 @@ def log_trade_close(ticket, exit_price, profit_usd, profit_pips, duration_sec, p
     # Mirror to trade_memory.db
     try:
         memory_db = get_trade_memory_db()
-        exit_reason = "MANUAL"
+        # Determine exit reason and hit flags from win_loss:
+        #   win_loss=1  -> TP hit
+        #   win_loss=-1 -> SL hit
+        #   win_loss=0  -> Manual/timeout (neither SL nor TP)
         if win_loss == 1:
             exit_reason = "TP"
+            tp_hit = True
+            sl_hit = False
         elif win_loss == -1:
             exit_reason = "SL"
-            
+            tp_hit = False
+            sl_hit = True
+        else:
+            exit_reason = "MANUAL"
+            tp_hit = False
+            sl_hit = False
+
         exit_data = {
-            "exit_time": datetime.now().isoformat(),
+            "exit_time": datetime.now(timezone.utc).isoformat(),  # Use UTC, not local wall-clock
             "exit_price": exit_price,
             "profit_usd": profit_usd,
             "duration_seconds": int(duration_sec),
             "exit_reason": exit_reason,
-            "profit_pct": 0.0
+            "profit_pct": 0.0,
+            "tp_was_hit": tp_hit,   # Explicitly set — never NULL on new trades
+            "sl_was_hit": sl_hit,   # Explicitly set — never NULL on new trades
         }
         memory_db.update_exit(ticket, exit_data)
+        logger.info(
+            f"Trade #{ticket} exit logged: reason={exit_reason} "
+            f"tp_was_hit={tp_hit} sl_was_hit={sl_hit} pnl=${profit_usd:.2f}"
+        )
     except Exception as e:
         logger.error(f"Error mirroring trade close to trade_memory: {e}")
 
