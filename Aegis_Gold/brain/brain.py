@@ -187,7 +187,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
                 _u_tp = _u_exits["tp_pts"]
                 _u_rr = _u_exits["rr_ratio"]
             except Exception:
-                _u_sl, _u_tp, _u_rr = 50, 65, 1.3   # safe gold defaults
+                is_gold = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
+                _u_sl, _u_tp, _u_rr = (150, 300, 2.0) if is_gold else (40, 80, 2.0)  # safe symbol defaults (meets mandatory SL floor)
             return Decision(
                 action="TRADE",
                 direction=unified_dec.direction,
@@ -457,7 +458,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         _s_tp  = _s_exits["tp_pts"]
         _s_rr  = _s_exits["rr_ratio"]
     except Exception:
-        _s_sl, _s_tp, _s_rr = 50, 65, 1.3   # safe gold defaults
+        is_gold = ("XAU" in symbol.upper() or "GOLD" in symbol.upper())
+        _s_sl, _s_tp, _s_rr = (150, 300, 2.0) if is_gold else (40, 80, 2.0)  # safe symbol defaults (meets mandatory SL floor)
 
     mode_name = f"SCALP_{scalp_ctrl.upper()}"
     final = (
