@@ -251,7 +251,74 @@ class CalibrationMonitor:
             f"Brier={bs:.4f} ({brier_label}), "
             f"Misc={miscal_buckets}, Penalty=+{new_penalty}pts"
         )
+
+        try:
+            self._evaluate_drift()
+        except Exception as drift_ex:
+            logger.error(f"[CALIBRATION] Drift evaluation failed: {drift_ex}")
+
         return self._state
+
+    def _evaluate_drift(self):
+        """
+        Track rolling underperformance of verdicts marked positive edge and clean microstructure.
+        If recent win rate drops by 15% or more below the historical baseline win rate, trigger a Telegram drift alert.
+        """
+        if not ATTRIBUTION_DB.exists():
+            return
+        
+        try:
+            conn = sqlite3.connect(str(ATTRIBUTION_DB))
+            conn.row_factory = sqlite3.Row
+            
+            # 1. Fetch recent trades (last 20) with positive edge and clean microstructure
+            recent_rows = conn.execute(
+                "SELECT outcome FROM attributions "
+                "WHERE outcome IN ('WIN', 'LOSS') "
+                "AND historical_edge = 'positive' AND microstructure_quality = 'clean' "
+                "ORDER BY id DESC LIMIT 20"
+            ).fetchall()
+            
+            if len(recent_rows) < 10:
+                # Need at least 10 trades to calculate a meaningful rolling win rate
+                conn.close()
+                return
+            
+            recent_wins = sum(1 for r in recent_rows if r["outcome"] == "WIN")
+            recent_wr = (recent_wins / len(recent_rows)) * 100.0
+            
+            # 2. Fetch historical baseline (all such trades)
+            baseline_row = conn.execute(
+                "SELECT COUNT(*), SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) "
+                "FROM attributions "
+                "WHERE outcome IN ('WIN', 'LOSS') "
+                "AND historical_edge = 'positive' AND microstructure_quality = 'clean'"
+            ).fetchone()
+            
+            total_count = baseline_row[0]
+            total_wins = baseline_row[1] if baseline_row[1] is not None else 0
+            
+            if total_count < 20:
+                # Need at least 20 total trades of this category for a valid baseline comparison
+                conn.close()
+                return
+                
+            historical_wr = (total_wins / total_count) * 100.0
+            
+            # If recent win rate drops significantly (15%+) below historical baseline, trigger a warning!
+            diff = historical_wr - recent_wr
+            if diff >= 15.0:
+                self._alert(
+                    f"⚠️ <b>[LLM ANALYST DRIFT ALERT]</b> Underperformance detected in high-quality trade category "
+                    f"('positive' edge, 'clean' microstructure).\n"
+                    f"• Rolling Win Rate (last {len(recent_rows)}): {recent_wr:.1f}%\n"
+                    f"• Historical Baseline Win Rate (total {total_count}): {historical_wr:.1f}%\n"
+                    f"• Underperformance Delta: -{diff:.1f}% (Threshold: -15.0%)"
+                )
+            
+            conn.close()
+        except Exception as e:
+            logger.error(f"[CALIBRATION] Error evaluating high-quality signal drift: {e}")
 
     # ── Live threshold adjustment ───────────────────────────────
 

@@ -19,16 +19,8 @@ def analyze_entry(ticks, candles, direction: str) -> EntryState:
     if len(candles) < 15:
         return EntryState(0, 0, "NO_SIGNAL", "Not enough data")
         
-    try:
-        opens = [float(c['open']) for c in candles]
-        highs = [float(c['high']) for c in candles]
-        lows = [float(c['low']) for c in candles]
-        closes = [float(c['close']) for c in candles]
-    except TypeError:
-        opens = [float(c[1]) for c in candles]
-        highs = [float(c[2]) for c in candles]
-        lows = [float(c[3]) for c in candles]
-        closes = [float(c[4]) for c in candles]
+    from brain.candle_utils import parse_ohlc
+    opens, highs, lows, closes = parse_ohlc(candles)
 
     # Candle Pattern Analysis (last completed M5 candle)
     c_open, c_high, c_low, c_close = float(opens[-2]), float(highs[-2]), float(lows[-2]), float(closes[-2])
@@ -87,26 +79,33 @@ def analyze_entry(ticks, candles, direction: str) -> EntryState:
     rsi = RSI(closes, cfg.RSI_PERIOD)
     curr_rsi = rsi[-1]
     prev_rsi = rsi[-2]
+    # RSI analysis (contextual timing information, not a gate)
+    score = 0
     
     if direction == "BUY":
-        if curr_rsi > 75:
-            return EntryState(0, 0, "NO_SIGNAL", "Overbought, reversal risk")
+        # RSI provides timing context but doesn't block trades
+        # Oversold recovery is favorable timing, but not required
         if 45 < curr_rsi < 65:
             score += 15
         if curr_rsi > 50 and prev_rsi <= 50:
             score += 20
         if 30 < curr_rsi < 45 and prev_rsi <= 30:
-            score += 25  # Recovering from oversold
+            score += 25  # Recovering from oversold (good timing)
+        
+        # Note: No longer rejecting overbought (RSI > 75)
+        # Pattern structure determines trade, not RSI threshold
             
     elif direction == "SELL":
-        if curr_rsi < 25:
-            return EntryState(0, 0, "NO_SIGNAL", "Oversold, reversal risk")
+        # RSI timing context for SELL
         if 35 < curr_rsi < 55:
             score += 15
         if curr_rsi < 50 and prev_rsi >= 50:
             score += 20
         if 55 < curr_rsi < 70 and prev_rsi >= 70:
-            score += 25  # Retreating from overbought
+            score += 25  # Retreating from overbought (good timing)
+        
+        # Note: No longer rejecting oversold (RSI < 25)
+        # Pattern structure determines trade, not RSI threshold
             
     # Velocity factor
     # Since ticks represents tick array over time, we assume ticks list of NamedTuples

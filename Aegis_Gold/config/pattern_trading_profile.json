@@ -1,0 +1,19 @@
+{
+  "version": "2.0.0",
+  "min_remaining_rr": 1.8,
+  "max_move_consumed_pct": 50.0,
+  "min_net_ev": 0.5,
+  "min_engine_consensus": 4,
+  "allowed_scales": [
+    "SMALL",
+    "MEDIUM",
+    "LARGE"
+  ],
+  "approved_patterns": [
+    "BOS_BULLISH",
+    "BOS_BEARISH",
+    "ORDER_BLOCK_BULLISH",
+    "ORDER_BLOCK_BEARISH",
+    "LIQUIDITY_SWEEP_BULLISH"
+  ]
+}

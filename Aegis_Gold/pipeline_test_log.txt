@@ -1,0 +1,137 @@
+﻿python : [INFO] test_pipeline - 
+At line:1 char:48
++ ... gis_Gold" ; python tests/test_real_pipeline_xauusd_eurusd.py 2>&1 | O ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([INFO] test_pipeline - :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+[STARTING] XAUUSD pipeline test...
+[INFO] test_pipeline - Initializing MT5 Gateway...
+[INFO] aegis.mt5 - Auto-detected standard symbol: XAUUSD
+[INFO] aegis.mt5 - Auto-detected standard symbol: EURUSD
+[INFO] aegis.mt5 - Active symbols: ['XAUUSD', 'EURUSD']
+[INFO] aegis.mt5 - Symbol XAUUSD cached: point=0.01 digits=2
+[INFO] aegis.mt5 - Symbol EURUSD cached: point=1e-05 digits=5
+[WARNING] aegis.mt5 - \u2705 MT5 multi-symbol gateway connected
+Active: XAUUSD, EURUSD
+[INFO] aegis.mt5 - MT5 initialized (attempt 1) ? symbols: XAUUSD, EURUSD
+[INFO] test_pipeline - [OK] MT5 connected
+[INFO] test_pipeline - [OK] Account: equity=$5327325.12
+[INFO] aegis.risk - Daily state reset ? equity=5327325.12 date=2026-08-19
+[INFO] test_pipeline - 
+[XAUUSD] Fetching market data...
+[INFO] test_pipeline - [XAUUSD] Tick: bid=4342.85 ask=4343.09
+[INFO] test_pipeline - [XAUUSD] Data: 200 ticks, 100 M5 candles, 30 M1 candles
+[INFO] test_pipeline - [XAUUSD] Running decision pipeline...
+[INFO] aegis.omega.learning - Local OMEGA Adaptive Learning Engine initialized.
+[INFO] ML_Ensemble - [OK] Models loaded from d:\Trading\Aegis_Gold\models\ml_ensemble.pkl
+[INFO] ML_Ensemble - [ML] ML Ensemble initialized
+[INFO] ML_Ensemble - [OK] ML prediction: BUY | Prob: 0.74 | Agreement: 0.77
+[INFO] aegis.omega.candle_ai - Local OMEGA Candle AI Engine v2.0 initialized.
+[INFO] aegis.omega.trend - Local OMEGA Trend Detector initialized.
+[INFO] aegis.omega.momentum - Local OMEGA Momentum Engine initialized.
+[INFO] aegis.omega.volatility - Local OMEGA Volatility Engine initialized.
+[INFO] aegis.omega.spread - Local OMEGA Spread Filter initialized.
+[INFO] aegis.omega.entry - Local OMEGA Entry Engine initialized (symbol-aware zones).
+[INFO] aegis.omega.exit - Local OMEGA Exit Engine v2.0 initialized ? ATR-scaled SL/TP enabled.
+[INFO] aegis.omega.learning - Local OMEGA Adaptive Learning Engine initialized.
+[INFO] aegis.omega.recovery - Local OMEGA Recovery Daemon initialized.
+[INFO] aegis.ai - [OK] ANTIGRAVITY OMEGA Local Offline AI Supervisor ENABLED (100% 
+cloud-independent)
+[WARNING] aegis.kronos_forecaster - [WARN] [KRONOS] PyTorch unavailable (No module named 
+'torch'). Operating in analytical mode.
+[INFO] aegis.brain - [XAUUSD] RAW_ENGINE_VOTES | Neural: NEUTRAL (50%) | Quant: BULLISH (93%) | 
+ML: BULLISH (74%) | OMEGA: BEARISH (40%) | Kronos: NEUTRAL (50%) | BigPat: BEARISH (BOS_BEARISH)
+[INFO] aegis.pattern - Pattern Recognition Engine v2.0 initialized
+[INFO] aegis.smc_pattern - SMC Pattern Engine initialized
+[INFO] aegis.pattern - Found 0 patterns
+[INFO] aegis.smc - [SMC] SMC SELL XAUUSD | conf=60% C | BOS=\u2705 CHoCH=\u274c OB=\u2705 
+Sweep=\u274c PO3=MANIPULATION | SL:100pts TP:300pts
+[INFO] aegis.smc - [SMC]   \u2705 BOS BEARISH ù structure break down @ 4351.78
+[INFO] aegis.smc - [SMC]   \u2705 OB BEAR @ 4338.54û4345.62 (strength 76%) ù price inside OB zone
+[INFO] aegis.smc - [SMC]   \u274c No liquidity sweep ù entry not at swept level
+[INFO] aegis.smc - [SMC]   \U0001f7e1 PO3 MANIPULATION phase ù sweep likely in progress (+10pts)
+[INFO] aegis.smc - [SMC]   \U0001f7e1 Bearish FVG nearby ù approaching imbalance (+5pts)
+[INFO] aegis.smc - [SMC]   \U0001f7e1 M1 structure not yet confirming M5 direction
+[INFO] aegis.brain - [XAUUSD] \U0001f3af SMC TRADE | conf=60% C | SELL XAUUSD | BOS=\u2705 
+CHoCH=\u274c | SL:100pts TP:300pts RR:3.0 | Lot:0.01
+[ERROR] aegis.brain - Error loading RL Agent in brain decision flow: No module named 'torch'
+[INFO] ML_Ensemble - [OK] ML prediction: NEUTRAL | Prob: 0.51 | Agreement: 0.92
+[INFO] aegis.omega.learning - Local OMEGA Adaptive Learning Engine initialized.
+[ERROR] aegis.brain - Regime switcher error in decidewrapper: 'SCALP_STANDARD'
+[INFO] aegis.observability - {"level": "INFO", "message": "Structured Decision Record emitted", 
+"data": {"timestamp": "2026-08-19T06:49:47.090119+00:00", "symbol": "XAUUSD", "action": "TRADE", 
+"direction": "SELL", "confidence": 60, "uncertainty": 0.0, "regime": "SMC", "regime_confidence": 
+0.0, "features_summary": "{\"adx\": 0.0, \"rsi\": 49.649160150348465, \"atr\": 
+4.978935605875633}", "model_outputs": "{\"rl_action\": \"WAIT\", \"rl_confidence\": 0}", 
+"risk_assessment": "{\"lot\": 0.01, \"sl\": 100, \"tp\": 300}", "sizing_rationale": "fixed", 
+"execution_details": "{\"spread\": 23.999999999978172}", "outcome": "UNKNOWN", "shap_top_3": 
+"[]", "config_hash": "acdc4b1759be", "model_version_id": "Aegis_Quant_X_v9.0"}}
+[INFO] test_pipeline - [XAUUSD] Decision: action=TRADE direction=SELL confidence=60%
+[INFO] test_pipeline - [XAUUSD] Signal source: SMC | Pattern: MANIPULATION
+[INFO] test_pipeline - [XAUUSD] Reason: \U0001f3af SMC TRADE | conf=60% C | SELL XAUUSD | 
+BOS=\u2705 CHoCH=\u274c | SL:100pts TP:300pts RR:
+[INFO] test_pipeline - [OK] XAUUSD pipeline completed successfully
+[INFO] test_pipeline - 
+[STARTING] EURUSD pipeline test...
+[INFO] test_pipeline - Initializing MT5 Gateway...
+[INFO] aegis.mt5 - Auto-detected standard symbol: XAUUSD
+[INFO] aegis.mt5 - Auto-detected standard symbol: EURUSD
+[INFO] aegis.mt5 - Active symbols: ['XAUUSD', 'EURUSD']
+[INFO] aegis.mt5 - Symbol XAUUSD cached: point=0.01 digits=2
+[INFO] aegis.mt5 - Symbol EURUSD cached: point=1e-05 digits=5
+[WARNING] aegis.mt5 - \u2705 MT5 multi-symbol gateway connected
+Active: XAUUSD, EURUSD
+[INFO] aegis.mt5 - MT5 initialized (attempt 1) ? symbols: XAUUSD, EURUSD
+[INFO] test_pipeline - [OK] MT5 connected
+[INFO] test_pipeline - [OK] Account: equity=$5327325.12
+[INFO] aegis.risk - Daily state reset ? equity=5327325.12 date=2026-08-19
+[INFO] test_pipeline - 
+[EURUSD] Fetching market data...
+[INFO] test_pipeline - [EURUSD] Tick: bid=1.15963 ask=1.15964
+[INFO] test_pipeline - [EURUSD] Data: 200 ticks, 100 M5 candles, 30 M1 candles
+[INFO] test_pipeline - [EURUSD] Running decision pipeline...
+[INFO] aegis.omega.learning - Local OMEGA Adaptive Learning Engine initialized.
+[INFO] ML_Ensemble - [OK] ML prediction: BUY | Prob: 0.74 | Agreement: 0.77
+[INFO] aegis.brain - [EURUSD] RAW_ENGINE_VOTES | Neural: NEUTRAL (50%) | Quant: BULLISH (92%) | 
+ML: BULLISH (74%) | OMEGA: BEARISH (92%) | Kronos: BULLISH (86%) | BigPat: NEUTRAL (NONE)
+[ERROR] aegis.brain - Error loading RL Agent in brain decision flow: No module named 'torch'
+[INFO] ML_Ensemble - [OK] ML prediction: SELL | Prob: 0.23 | Agreement: 0.51
+[INFO] aegis.omega.learning - Local OMEGA Adaptive Learning Engine initialized.
+[ERROR] aegis.brain - Regime switcher error in decidewrapper: 'SCALP_STANDARD'
+[INFO] aegis.observability - {"level": "INFO", "message": "Structured Decision Record emitted", 
+"data": {"timestamp": "2026-08-19T06:49:47.169373+00:00", "symbol": "EURUSD", "action": "WAIT", 
+"direction": "NA", "confidence": 23, "uncertainty": 0.0, "regime": "NA", "regime_confidence": 
+0.0, "features_summary": "{\"adx\": 0.0, \"rsi\": 0.0, \"atr\": 0.0002446236657844392}", 
+"model_outputs": "{\"rl_action\": \"WAIT\", \"rl_confidence\": 0}", "risk_assessment": 
+"{\"lot\": 0.0, \"sl\": 0, \"tp\": 0}", "sizing_rationale": "fixed", "execution_details": 
+"{\"spread\": 1.0000000000065512}", "outcome": "UNKNOWN", "shap_top_3": "[]", "config_hash": 
+"acdc4b1759be", "model_version_id": "Aegis_Quant_X_v9.0"}}
+[INFO] test_pipeline - [EURUSD] Decision: action=WAIT direction=NA confidence=23%
+[INFO] test_pipeline - [EURUSD] Signal source: SNIPER_GATE | Pattern: NONE
+[INFO] test_pipeline - [EURUSD] Reason: Confidence 23% < adaptive threshold 60% (base=60%, 
+uncertainty_penalty=0pts)
+[INFO] test_pipeline - [OK] EURUSD pipeline completed successfully
+
+######################################################################
+# REAL PIPELINE TEST (XAUUSD + EURUSD)
+######################################################################
+Mode: DEMO (no orders placed)
+Config: DEMO_MODE=True
+
+======================================================================
+TEST: XAUUSD REAL PIPELINE
+======================================================================
+
+======================================================================
+TEST: EURUSD REAL PIPELINE
+======================================================================
+
+######################################################################
+# RESULTS
+######################################################################
+[OK] XAUUSD: PASS
+[OK] EURUSD: PASS
+######################################################################
+# 2/2 PASSED
+######################################################################

@@ -42,6 +42,7 @@ class DecisionFusionV2:
         regime_ambiguous: bool,
         calibration_penalty: int,
         drift_defensive: bool,
+        pattern_signal: Optional[dict] = None,
         unified_decision: Optional[Any] = None,
     ) -> FusionResult:
         from config.quant_x_config import QX
@@ -57,17 +58,26 @@ class DecisionFusionV2:
         action = "WAIT"
         block_reason = ""
 
+        # Initialize pattern_signal safely - never undefined
+        if not isinstance(pattern_signal, dict):
+            pattern_signal = {
+                "direction": "NONE",
+                "confidence": 0.0,
+                "pattern_name": None,
+                "source": "none"
+            }
+
         # Gather weights based on drift & calibration
         w_ml = 0.40
         w_smc = 0.35
-        w_scalp = 0.25
+        w_pattern = 0.25
         w_rl = 0.15
         w_unified = 0.50
 
         if drift_defensive:
             w_ml = 0.10  # demote drifted ML prediction
             w_smc = 0.50
-            w_scalp = 0.40
+            w_pattern = 0.40
             logger.info("[FUSION] Feature drift detected: demoting ML Ensemble weight.")
 
         # Aggregate probabilities for BUY, SELL, WAIT
@@ -92,14 +102,22 @@ class DecisionFusionV2:
             elif smc_dir == "SELL":
                 sell_votes.append(smc_conf * w_smc)
 
-        # 2. Classic Scalp Input
-        if scalp_signal and scalp_signal.get("direction") != "NONE":
-            scalp_dir = scalp_signal.get("direction")
-            scalp_conf = float(scalp_signal.get("confidence", 0.0)) / 100.0
-            if scalp_dir == "BUY":
-                buy_votes.append(scalp_conf * w_scalp)
-            elif scalp_dir == "SELL":
-                sell_votes.append(scalp_conf * w_scalp)
+        # 2. Pattern Signal Input
+        if pattern_signal and pattern_signal.get("direction") != "NONE":
+            pattern_dir = pattern_signal.get("direction")
+            pattern_conf = float(pattern_signal.get("confidence", 0.0)) / 100.0
+            if pattern_dir == "BUY":
+                buy_votes.append(pattern_conf * w_pattern)
+            elif pattern_dir == "SELL":
+                sell_votes.append(pattern_conf * w_pattern)
+            
+            logger.debug(
+                "[PATTERN_FLOW] DecisionFusion processing pattern_signal: "
+                "direction=%s confidence=%.1f%% pattern_name=%s contribution=%.3f",
+                pattern_dir, pattern_signal.get("confidence", 0.0),
+                pattern_signal.get("pattern_name", "unknown"),
+                (pattern_conf * w_pattern)
+            )
 
         # 3. ML Prediction Input
         if ml_prediction and ml_prediction.get("direction") != "NEUTRAL":
@@ -128,8 +146,8 @@ class DecisionFusionV2:
             active_weights += w_unified
         if smc_signal and smc_signal.get("direction") != "NONE":
             active_weights += w_smc
-        if scalp_signal and scalp_signal.get("direction") != "NONE":
-            active_weights += w_scalp
+        if pattern_signal and pattern_signal.get("direction") != "NONE":
+            active_weights += w_pattern
         if ml_prediction and ml_prediction.get("direction") != "NEUTRAL":
             active_weights += w_ml
         if rl_action != "WAIT":
@@ -178,12 +196,28 @@ class DecisionFusionV2:
         elif ml_prediction and float(ml_prediction.get("uncertainty", 0.0)) > float(QX.get("ensemble_disagreement_block_threshold") or 0.35):
             action = "WAIT"
             block_reason = f"VETO | ML ensemble disagreement too high"
-        # 4. Standard threshold gating
-        elif confidence >= 50:
+        # 4. Adaptive threshold gating (EQS-driven, replaces hardcoded 50%)
+        # Get adaptive threshold from AdaptiveLearning — rises during drawdown
+        _fusion_min = 60  # default 60%
+        try:
+            from brain.adaptive_learning import AdaptiveLearning
+            _fusion_min = int(AdaptiveLearning().get_eqs_threshold() * 100)
+        except Exception:
+            pass
+
+        # Uncertainty penalty: high model disagreement raises the required bar
+        _uncertainty_penalty = int(max(0.0, uncertainty - 0.3) * 20)  # up to +10 pts
+        _effective_threshold = min(75, _fusion_min + _uncertainty_penalty)
+
+        if confidence >= _effective_threshold:
             action = "TRADE"
         else:
             action = "WAIT"
-            block_reason = f"Confidence {confidence}% < 50% threshold"
+            block_reason = (
+                f"Confidence {confidence}% < adaptive threshold {_effective_threshold}% "
+                f"(base={_fusion_min}%, uncertainty_penalty={_uncertainty_penalty}pts)"
+            )
+
 
         return FusionResult(
             long_prob=round(buy_prob, 4),

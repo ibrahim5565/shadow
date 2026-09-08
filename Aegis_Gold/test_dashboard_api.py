@@ -2,6 +2,13 @@
 Quick diagnostic test for dashboard API
 Verifies that all required fields are present for XAUUSD
 """
+import sys
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 import requests
 import json
 

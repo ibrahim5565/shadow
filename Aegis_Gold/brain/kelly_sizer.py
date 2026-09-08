@@ -166,7 +166,7 @@ def fractional_kelly_lot(
     """
     # Guard degenerate inputs
     if avg_loss_pts <= 0 or equity <= 0 or risk_per_lot <= 0:
-        logger.debug("[KELLY] Degenerate inputs — returning 0.0 (fallback to base_lot)")
+        logger.debug("[KELLY] Degenerate inputs ? returning 0.0 (fallback to base_lot)")
         return 0.0
 
     # Full Kelly fraction
@@ -282,3 +282,34 @@ def compute_kelly_lot(
         logger.error("[KELLY] compute_kelly_lot failed: %s", exc)
         meta["fallback_reason"] = str(exc)
         return 0.0, meta
+
+
+class KellySizer:
+    """
+    Class wrapper for Fractional Kelly Position Sizer.
+    """
+    def __init__(self, kelly_fraction: float = 0.25, max_risk_pct: float = 0.02):
+        self.kelly_fraction = kelly_fraction
+        self.max_risk_pct = max_risk_pct
+
+    def compute_lot(self, equity: float, risk_per_lot: float, rolling_n: int = 50, max_lot_cap: float = 1.0) -> tuple:
+        return compute_kelly_lot(
+            equity=equity,
+            risk_per_lot=risk_per_lot,
+            rolling_n=rolling_n,
+            kelly_fraction=self.kelly_fraction,
+            max_lot_cap=max_lot_cap,
+            max_risk_pct=self.max_risk_pct,
+        )
+
+    def calculate_lot(self, win_rate: float, avg_win_pts: float, avg_loss_pts: float, equity: float, risk_per_lot: float) -> float:
+        return fractional_kelly_lot(
+            win_rate=win_rate,
+            avg_win_pts=avg_win_pts,
+            avg_loss_pts=avg_loss_pts,
+            equity=equity,
+            risk_per_lot=risk_per_lot,
+            kelly_fraction=self.kelly_fraction,
+            max_risk_pct=self.max_risk_pct,
+        )
+

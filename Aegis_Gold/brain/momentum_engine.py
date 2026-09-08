@@ -46,14 +46,8 @@ class MomentumEngine:
             acceleration = 0.5
 
         # 2. M1 Breakout candle momentum
-        try:
-            closes = [c['close'] for c in candles_m1]
-            highs = [c['high'] for c in candles_m1]
-            lows = [c['low'] for c in candles_m1]
-        except TypeError:
-            closes = [c[4] for c in candles_m1]
-            highs = [c[2] for c in candles_m1]
-            lows = [c[3] for c in candles_m1]
+        from brain.candle_utils import parse_hlc
+        highs, lows, closes = parse_hlc(candles_m1)
 
         # Calculate current M1 range vs average M1 range of past 10 candles
         ranges = [abs(highs[i] - lows[i]) for i in range(len(highs))]

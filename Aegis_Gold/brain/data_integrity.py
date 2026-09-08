@@ -171,9 +171,11 @@ def detect_stale_price(ticks: Sequence, report: IntegrityReport,
     Flag when the bid price is unchanged across stale_ticks consecutive ticks.
     A genuinely active market almost never has 50 identical consecutive bids.
     """
-    if not ticks or len(ticks) < stale_ticks:
+    if ticks is None:
         return
     try:
+        if len(ticks) < stale_ticks:
+            return
         recent = ticks[-stale_ticks:]
         bids: list[float] = []
         for t in recent:
@@ -315,7 +317,7 @@ def validate_tick_feed(ticks, symbol: str = "XAUUSD") -> bool:
     detect_stale_price(ticks, report, stale_ticks=stale_n)
 
     if report.stale_detected:
-        logger.warning("[INTEGRITY][%s] Tick feed appears stale — WAIT recommended", symbol)
+        logger.warning("[INTEGRITY][%s] Tick feed appears stale ? WAIT recommended", symbol)
         return False
 
     return True

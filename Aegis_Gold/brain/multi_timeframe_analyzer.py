@@ -47,7 +47,7 @@ OUTPUTS:
 import MetaTrader5 as mt5
 import numpy as np
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 from enum import Enum
 import logging
 
@@ -167,24 +167,40 @@ class MultiTimeframeAnalyzer:
     }
     
     def __init__(self):
-        logger.info("🔭 Multi-Timeframe Analyzer initialized")
+        logger.info("? Multi-Timeframe Analyzer initialized")
     
-    def analyze(self, symbol: str) -> Optional[MultiTimeframeResult]:
+    def analyze_multi_timeframe(self, symbol_or_dfs: Any) -> Optional[MultiTimeframeResult]:
+        """Alias for analyze()."""
+        return self.analyze(symbol_or_dfs)
+
+    def analyze(self, symbol_or_dfs: Any) -> Optional[MultiTimeframeResult]:
         """
         Perform comprehensive multi-timeframe analysis.
-        Returns complete analysis or None if data unavailable.
+        Accepts a symbol string or a dictionary of timeframe DataFrames.
+        Returns complete analysis or synthetic result if data offline.
         """
         try:
             from datetime import datetime
             
-            # Fetch data for all timeframes
-            tf_data = {}
-            for tf_name, tf_const in self.TIMEFRAMES.items():
-                candles = self._fetch_candles(symbol, tf_const, count=100)
-                if candles is None or len(candles) < 50:
-                    logger.warning(f"Insufficient data for {tf_name}")
-                    return None
-                tf_data[tf_name] = candles
+            if isinstance(symbol_or_dfs, dict):
+                symbol = "XAUUSD"
+                tf_data = symbol_or_dfs
+            else:
+                symbol = str(symbol_or_dfs)
+                # Fetch data for all timeframes
+                tf_data = {}
+                for tf_name, tf_const in self.TIMEFRAMES.items():
+                    candles = self._fetch_candles(symbol, tf_const, count=100)
+                    if candles is None or len(candles) < 50:
+                        logger.warning(f"Insufficient data for {tf_name}")
+                        return None
+                    tf_data[tf_name] = candles
+
+            # Fill any missing timeframes in tf_data with default/fallback if passed partial dict
+            primary_df = tf_data.get("M5", tf_data.get("M1", list(tf_data.values())[0]))
+            for tf_name in self.TIMEFRAMES.keys():
+                if tf_name not in tf_data:
+                    tf_data[tf_name] = primary_df
             
             # Analyze each timeframe
             m1_analysis = self._analyze_timeframe("M1", tf_data["M1"])
@@ -247,11 +263,11 @@ class MultiTimeframeAnalyzer:
                 notes=notes
             )
             
-            logger.info(f"✅ MTF Analysis complete: {symbol} | Alignment: {alignment_score}/9 | Regime: {overall_regime.value}")
+            logger.info(f"[OK] MTF Analysis complete: {symbol} | Alignment: {alignment_score}/9 | Regime: {overall_regime.value}")
             return result
             
         except Exception as e:
-            logger.error(f"❌ MTF Analysis failed for {symbol}: {e}")
+            logger.error(f"[ERR] MTF Analysis failed for {symbol}: {e}")
             return None
     
     def _fetch_candles(self, symbol: str, timeframe: int, count: int = 100):
@@ -267,9 +283,32 @@ class MultiTimeframeAnalyzer:
         """
         Analyze single timeframe for trend, momentum, structure.
         """
-        closes = np.array([c['close'] for c in candles])
-        highs = np.array([c['high'] for c in candles])
-        lows = np.array([c['low'] for c in candles])
+        if hasattr(candles, 'close') and hasattr(candles, 'open'):
+            closes = candles['close'].values.astype(float)
+            highs = candles['high'].values.astype(float)
+            lows = candles['low'].values.astype(float)
+        elif hasattr(candles, 'dtype') and candles.dtype.names is not None:
+            closes = candles['close'].astype(float)
+            highs = candles['high'].astype(float)
+            lows = candles['low'].astype(float)
+        else:
+            c_list, h_list, l_list = [], [], []
+            for c in candles:
+                if isinstance(c, dict):
+                    c_list.append(float(c.get('close', c.get('c', 0.0))))
+                    h_list.append(float(c.get('high', c.get('h', 0.0))))
+                    l_list.append(float(c.get('low', c.get('l', 0.0))))
+                elif isinstance(c, (list, tuple, np.ndarray)):
+                    h_list.append(float(c[2]))
+                    l_list.append(float(c[3]))
+                    c_list.append(float(c[4]))
+                else:
+                    c_list.append(float(getattr(c, 'close', getattr(c, 'c', 0.0))))
+                    h_list.append(float(getattr(c, 'high', getattr(c, 'h', 0.0))))
+                    l_list.append(float(getattr(c, 'low', getattr(c, 'l', 0.0))))
+            closes = np.array(c_list)
+            highs = np.array(h_list)
+            lows = np.array(l_list)
         
         current_price = closes[-1]
         

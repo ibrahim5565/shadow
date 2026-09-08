@@ -9,9 +9,9 @@ The market is never in a single static state. AEGIS must dynamically
 shift its strategy profile based on the current market regime:
 
   STRONG_TREND  → Use trend-following entries, wider TP, tighter SL
-  WEAK_TREND    → Use momentum scalps, moderate TP/SL
+  WEAK_TREND    → Use momentum pattern trading, moderate TP/SL
   RANGE         → Use mean-reversion setups, SMC OBs, tighter TP
-  VOLATILE      → Reduce lot size, widen SL, raise confidence threshold
+  VOLATILE      → Reduce lot size, widen SL, raise pattern quality threshold
   TRANSITION    → Wait for clarity, avoid new entries
 
 HOW IT WORKS:
@@ -26,8 +26,8 @@ HOW IT WORKS:
 
 STRATEGY PROFILES:
 ------------------
-SCALP_AGGRESSIVE    (STRONG_TREND + London/NY session)
-SCALP_STANDARD      (WEAK_TREND)
+SMALL_PATTERN_AGGRESSIVE    (STRONG_TREND + London/NY session)
+SMALL_PATTERN_STANDARD      (WEAK_TREND)
 RANGE_REVERSAL      (RANGE)
 DEFENSIVE           (VOLATILE / TRANSITION)
 SMC_PREMIUM         (HTF order block + BOS confirmed)
@@ -36,10 +36,11 @@ SMC_PREMIUM         (HTF order block + BOS confirmed)
 
 import json
 import logging
+import numpy as np
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 
 logger = logging.getLogger("aegis.regime_switcher")
 
@@ -69,7 +70,7 @@ class StrategyProfile:
 
     # Signal preference
     prefer_smc: bool                # True = SMC signals weighted higher
-    prefer_scalp: bool              # True = SCALP signals weighted higher
+    prefer_small_patterns: bool     # True = small-pattern signals weighted higher
     prefer_reversal: bool           # True = Counter-trend setups preferred
 
     # Additional guard
@@ -94,21 +95,49 @@ PROFILES: Dict[str, StrategyProfile] = {
         tp_multiplier=1.5,
         sl_multiplier=1.0,
         prefer_smc=False,
-        prefer_scalp=True,
+        prefer_small_patterns=True,
         prefer_reversal=False,
         skip_if_news=True,
         max_spread_multiplier=1.0,
     ),
     "SCALP_STANDARD": StrategyProfile(
         name="SCALP_STANDARD",
-        description="Moderate trend — standard scalp parameters",
+        description="Moderate trend — standard small-pattern parameters",
         min_confidence_override=50,
         confidence_bonus=0,
         lot_multiplier=1.0,
         tp_multiplier=1.0,
         sl_multiplier=1.0,
         prefer_smc=False,
-        prefer_scalp=True,
+        prefer_small_patterns=True,
+        prefer_reversal=False,
+        skip_if_news=True,
+        max_spread_multiplier=1.0,
+    ),
+    "SMALL_PATTERN_AGGRESSIVE": StrategyProfile(
+        name="SMALL_PATTERN_AGGRESSIVE",
+        description="Strong trend active session — follow the trend, wide TP",
+        min_confidence_override=50,
+        confidence_bonus=5,
+        lot_multiplier=1.0,
+        tp_multiplier=1.5,
+        sl_multiplier=1.0,
+        prefer_smc=False,
+        prefer_small_patterns=True,
+        prefer_reversal=False,
+        skip_if_news=True,
+        max_spread_multiplier=1.0,
+    ),
+    "SMALL_PATTERN_STANDARD": StrategyProfile(
+        name="SMALL_PATTERN_STANDARD",
+        description="Moderate trend — standard small-pattern parameters",
+        min_confidence_override=50,
+        confidence_bonus=0,
+        lot_multiplier=1.0,
+        tp_multiplier=1.0,
+        sl_multiplier=1.0,
+        prefer_smc=False,
+        prefer_small_patterns=True,
         prefer_reversal=False,
         skip_if_news=True,
         max_spread_multiplier=1.0,
@@ -122,7 +151,7 @@ PROFILES: Dict[str, StrategyProfile] = {
         tp_multiplier=2.0,
         sl_multiplier=1.0,
         prefer_smc=True,
-        prefer_scalp=False,
+        prefer_small_patterns=False,
         prefer_reversal=False,
         skip_if_news=True,
         max_spread_multiplier=1.2,
@@ -136,7 +165,7 @@ PROFILES: Dict[str, StrategyProfile] = {
         tp_multiplier=0.8,
         sl_multiplier=0.9,
         prefer_smc=True,
-        prefer_scalp=False,
+        prefer_small_patterns=False,
         prefer_reversal=True,
         skip_if_news=True,
         max_spread_multiplier=0.9,
@@ -150,7 +179,7 @@ PROFILES: Dict[str, StrategyProfile] = {
         tp_multiplier=0.8,
         sl_multiplier=1.2,
         prefer_smc=False,
-        prefer_scalp=False,
+        prefer_small_patterns=False,
         prefer_reversal=False,
         skip_if_news=True,
         max_spread_multiplier=0.8,
@@ -254,7 +283,37 @@ class StrategyState:
         """
         Re-evaluate the active profile given current market conditions.
         Returns the new profile name if a switch occurred, else None.
+
+        VALIDATION: If regime or required features are invalid, the current
+        strategy is KEPT and the reason is logged.
         """
+        # ── REGIME VALIDATION ─────────────────────────────────────────
+        # Do not switch strategies based on invalid placeholder data.
+        invalid_reason = None
+
+        # Check regime_type is valid
+        if not regime_type or str(regime_type).strip().upper() in ("NA", "NONE", "UNKNOWN", ""):
+            invalid_reason = f"INVALID_REGIME_FEATURES | regime={regime_type}"
+
+        # Check ADX is valid (not 0.0 placeholder, not NaN, not inf)
+        try:
+            adx_f = float(adx)
+            if not np.isfinite(adx_f) or adx_f <= 0.0:
+                invalid_reason = f"INVALID_REGIME_FEATURES | ADX={adx}"
+        except (TypeError, ValueError):
+            invalid_reason = f"INVALID_REGIME_FEATURES | ADX={adx}"
+
+        # Check session is valid
+        if not session or str(session).strip().upper() in ("NA", "NONE", "UNKNOWN", ""):
+            invalid_reason = f"INVALID_REGIME_FEATURES | session={session}"
+
+        if invalid_reason:
+            logger.warning(
+                "[SWITCHER] KEEP CURRENT STRATEGY | %s | current=%s",
+                invalid_reason, self._current_name
+            )
+            return None
+
         new_name = _select_profile(regime_type, adx, session, recent_win_rate)
 
         if new_name != self._current_name:
@@ -298,3 +357,33 @@ def get_strategy_state() -> StrategyState:
 
 def get_active_profile() -> StrategyProfile:
     return get_strategy_state().current_profile
+
+
+class RegimeSwitcher:
+    """
+    Class wrapper for regime evaluation and strategy profile switching.
+    """
+    def __init__(self):
+        self.state = get_strategy_state()
+
+    def update_regime(self, df_or_regime: Any, adx: float = 25.0, session: str = "LONDON", win_rate: float = 0.5) -> StrategyProfile:
+        regime_type = "RANGE"
+        if isinstance(df_or_regime, str):
+            regime_type = df_or_regime
+        elif hasattr(df_or_regime, "close"):
+            # Compute basic ADX / trend proxy from df
+            prices = df_or_regime["close"].values
+            if len(prices) > 20:
+                diff = np.diff(prices[-20:])
+                if np.sum(diff > 0) > 13:
+                    regime_type = "STRONG_TREND"
+                elif np.sum(diff < 0) > 13:
+                    regime_type = "STRONG_TREND"
+
+        self.state.evaluate_and_switch(regime_type, adx, session, win_rate)
+        return self.state.current_profile
+
+    def detect_regime(self, df_or_regime: Any) -> str:
+        prof = self.update_regime(df_or_regime)
+        return prof.name
+

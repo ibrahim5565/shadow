@@ -182,6 +182,14 @@ class FeaturePipeline:
     Thread-safe (no mutable state).
     """
 
+    def process_market_data(self, bars, ticks=None, **kwargs) -> ExtendedFeatureSet:
+        """Alias for extract()."""
+        return self.extract(bars, ticks=ticks, **kwargs)
+
+    def process_data(self, bars, ticks=None, **kwargs) -> ExtendedFeatureSet:
+        """Alias for extract()."""
+        return self.extract(bars, ticks=ticks, **kwargs)
+
     def extract(
         self,
         bars,

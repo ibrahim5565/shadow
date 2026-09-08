@@ -189,3 +189,36 @@ def format_news_report(hours: int = 2) -> str:
             f"   🕐 {time_str} (in {mins_from_now} min)"
         )
     return "\n".join(lines)
+
+
+class NewsFilter:
+    """
+    Class wrapper for Forex Factory News Filter.
+    """
+    def __init__(self, blackout_minutes: int = 30):
+        self.blackout_minutes = blackout_minutes
+
+    def is_blackout(self, symbol: str = "XAUUSD") -> tuple:
+        return is_news_blackout(symbol=symbol, blackout_minutes=self.blackout_minutes)
+
+    def is_news_clear(self, symbol: str = "XAUUSD") -> bool:
+        """Returns True if trading is safe and not in blackout."""
+        blackout, _ = self.is_blackout(symbol=symbol)
+        return not blackout
+
+    def get_news_regime(self, symbol: str = "XAUUSD") -> str:
+        """Returns fundamental news regime classification."""
+        blackout, reason = self.is_blackout(symbol=symbol)
+        if blackout:
+            return "NEWS_SHOCK"
+        return "NORMAL"
+
+    def check(self, symbol: str = "XAUUSD") -> tuple:
+        return self.is_blackout(symbol=symbol)
+
+    def get_upcoming(self, hours: int = 2) -> list:
+        return get_upcoming_events(hours=hours)
+
+    def format_report(self, hours: int = 2) -> str:
+        return format_news_report(hours=hours)
+

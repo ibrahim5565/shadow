@@ -63,7 +63,7 @@ import numpy as np
 from scipy import stats
 from scipy.signal import welch
 from dataclasses import dataclass
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Any
 import logging
 
 logger = logging.getLogger("StatisticalEngine")
@@ -132,42 +132,49 @@ class StatisticalEngine:
         
         logger.info("[STAT] Statistical Engine initialized")
     
-    def analyze(self, prices: np.ndarray, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
+    def analyze(self, prices: Any, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
         """
         Perform comprehensive statistical analysis on price data.
         
         Args:
-            prices: Array of prices (at least 100 points recommended)
+            prices: Array or DataFrame of prices (at least 50 points recommended)
             volumes: Optional volume data
             
         Returns:
             StatisticalAnalysis object with all metrics
         """
-        if len(prices) < 50:
+        if hasattr(prices, 'close'):
+            prices_arr = prices['close'].values
+        elif hasattr(prices, 'values'):
+            prices_arr = prices.values.flatten()
+        else:
+            prices_arr = np.asarray(prices, dtype=float)
+
+        if len(prices_arr) < 50:
             logger.warning("Insufficient data for statistical analysis")
             return self._default_analysis()
         
         try:
             # 1. Bayesian Analysis
-            bayes_bull, bayes_bear, bayes_neut, bayes_conf = self._bayesian_inference(prices)
+            bayes_bull, bayes_bear, bayes_neut, bayes_conf = self._bayesian_inference(prices_arr)
             
             # 2. Kalman Filter
-            kalman_trend, kalman_vel, kalman_noise = self._kalman_filter(prices)
+            kalman_trend, kalman_vel, kalman_noise = self._kalman_filter(prices_arr)
             
             # 3. Hurst Exponent
-            hurst, behavior, persistence = self._hurst_exponent(prices)
+            hurst, behavior, persistence = self._hurst_exponent(prices_arr)
             
             # 4. Entropy
-            entropy, predictability, entropy_score = self._entropy_analysis(prices)
+            entropy, predictability, entropy_score = self._entropy_analysis(prices_arr)
             
             # 5. Monte Carlo
-            mc_return, mc_std, mc_var, mc_dd_prob = self._monte_carlo_simulation(prices)
+            mc_return, mc_std, mc_var, mc_dd_prob = self._monte_carlo_simulation(prices_arr)
             
             # 6. Autocorrelation
-            autocorr, optimal_hold, mean_rev = self._autocorrelation_analysis(prices)
+            autocorr, optimal_hold, mean_rev = self._autocorrelation_analysis(prices_arr)
             
             # 7. Fractal Dimension
-            fractal_dim, complexity = self._fractal_dimension(prices)
+            fractal_dim, complexity = self._fractal_dimension(prices_arr)
             
             # 8. Overall Assessment
             stat_edge, direction, confidence = self._calculate_edge(
@@ -208,6 +215,19 @@ class StatisticalEngine:
         except Exception as e:
             logger.error(f"[FAIL] Statistical analysis failed: {e}")
             return self._default_analysis()
+
+    def calculate_features(self, prices: Any, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
+        return self.analyze(prices, volumes=volumes)
+
+    def calculate_all_features(self, prices: Any, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
+        return self.analyze(prices, volumes=volumes)
+
+    def extract_features(self, prices: Any, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
+        return self.analyze(prices, volumes=volumes)
+
+    def compute_features(self, prices: Any, volumes: Optional[np.ndarray] = None) -> StatisticalAnalysis:
+        return self.analyze(prices, volumes=volumes)
+
     
     def _bayesian_inference(self, prices: np.ndarray) -> Tuple[float, float, float, float]:
         """
@@ -803,7 +823,7 @@ class HMMRegimeModel:
             logger.info("[HMM] Fitted GaussianHMM on %d observations", len(returns_series))
             return True
         except ImportError:
-            logger.warning("[HMM] hmmlearn not installed — using stub decoder")
+            logger.warning("[HMM] hmmlearn not installed ? using stub decoder")
             self._fitted = True   # Stub mode
             return True
         except Exception as exc:

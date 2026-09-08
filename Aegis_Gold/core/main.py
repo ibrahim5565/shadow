@@ -37,11 +37,12 @@ BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 import json
 from config import settings as cfg
+from config.quant_x_config import QX
 from modules.mt5_gateway import MT5Gateway
 from modules.feature_factory import FeatureFactory
 from modules.risk_manager import RiskManager
 from modules.telegram_bot import TelegramBot
-from brain.brain import decide as brain_decide
+from brain.brain import decide as brain_decide, verify_direction_integrity
 from brain.ai_supervisor import AISupervisor
 from brain.position_supervisor import PositionSupervisor
 from brain.gpt_brain import GPTBrain
@@ -260,6 +261,7 @@ def run_llm_analyst_evaluation(sym, decision, spread, session, equity, sym_point
         pass
 
     market_microstructure = {
+        "symbol": sym,
         "volatility_regime": vol_regime,
         "order_flow_imbalance": 0.12 if decision.direction == "BUY" else -0.12,
         "liquidity_score": round(1.0 - (float(spread) / 100.0), 2),
@@ -306,6 +308,12 @@ shared_state = {
     "latency": 0.0,
     "daily_trades": 0,
     "daily_pnl": 0.0,
+    "total_trades": 0,
+    "total_pnl": 0.0,
+    "total_wins": 0,
+    "total_losses": 0,
+    "win_rate": 0.0,
+    "profit_factor": 1.0,
     "per_trade_target": 5.0,
     "min_trades_per_day": cfg.MIN_TRADES_PER_DAY,
     "daily_target": 160.0,
@@ -397,13 +405,13 @@ def get_trades():
     try:
         with open(JOURNAL_PATH, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
-            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            rows = []
+            today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            today_local = datetime.now().strftime("%Y-%m-%d")
+            today_rows = []
+            all_rows = []
             for r in reader:
-                if not r.get("timestamp", "").startswith(today):
-                    continue
                 pnl = float(r.get("pnl_usd") or 0)
-                rows.append({
+                row_item = {
                     "id": r.get("trade_id"),
                     "symbol": r.get("symbol", "XAUUSD"),
                     "dir": r.get("direction"),
@@ -418,8 +426,15 @@ def get_trades():
                     "time": r.get("timestamp", "").split("T")[1][:8] if "T" in r.get("timestamp", "") else r.get("timestamp"),
                     "win": pnl >= 0,
                     "ai": r.get("ai_approved", "N/A"),
-                })
-            return jsonify(rows)
+                }
+                all_rows.append(row_item)
+                ts = r.get("timestamp", "")
+                if ts.startswith(today_utc) or ts.startswith(today_local):
+                    today_rows.append(row_item)
+            
+            # Return today's trades if available; otherwise fall back to last 50 historical trades
+            result = today_rows if len(today_rows) > 0 else all_rows[-50:]
+            return jsonify(result)
     except Exception as exc:
         logger.error("API /trades error: %s", exc)
         return jsonify([])
@@ -461,7 +476,7 @@ def run_command_api():
 # New endpoint – scan status
 @api.route('/scan')
 def scan_info():
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     next_scan = now + timedelta(seconds=SCAN_INTERVAL) if last_scan_time else None
     return jsonify({
         "last_scan": datetime.utcfromtimestamp(last_scan_time).isoformat() if last_scan_time else None,
@@ -1387,6 +1402,7 @@ async def main_loop():
     acct = await loop.run_in_executor(executor, gateway.get_account_info)
     if acct:
         risk.init_daily(acct["equity"])
+    risk.manual_resume()  # Ensure system starts ACTIVE with all legacy pause/stop_today flags cleared
 
     # Track symbol of open trades to handle history details on close
     open_trade_symbols = {}
@@ -1491,7 +1507,7 @@ async def main_loop():
                 "action": "WAIT",
                 "direction": "NONE",
                 "grade": "F",
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
     logger.info(f"Initialized symbol_analysis_state for: {list(symbol_analysis_state.keys())}")
 
@@ -1574,7 +1590,7 @@ async def main_loop():
                                 "action":          dec.action,
                                 "direction":       dec.direction,
                                 "grade":           dec.grade,
-                                "timestamp":       datetime.utcnow().isoformat()
+                                "timestamp":       datetime.now(timezone.utc).isoformat()
                             }
                             if sym == "XAUUSD" or shared_state["analysis"].get("confidence", 0) == 0:
                                 shared_state["analysis"] = {
@@ -1836,6 +1852,19 @@ async def main_loop():
                 shared_state["min_trades_per_day"] = cfg.MIN_TRADES_PER_DAY
                 shared_state["daily_target"]       = "UNLIMITED"
 
+                # Populate overall performance stats from performance DB
+                try:
+                    p_stats = perf.get_performance_stats(days=30)
+                    if p_stats:
+                        shared_state["total_trades"]  = p_stats.get("total_trades", rs["daily_trades"])
+                        shared_state["total_pnl"]     = p_stats.get("net_profit", float(equity - risk.start_equity))
+                        shared_state["total_wins"]    = p_stats.get("wins", rs["today_wins"])
+                        shared_state["total_losses"]  = p_stats.get("losses", rs["today_losses"])
+                        shared_state["win_rate"]      = p_stats.get("win_rate", 0.0)
+                        shared_state["profit_factor"] = p_stats.get("profit_factor", 1.0)
+                except Exception:
+                    pass
+
             # ── 11b. Periodic Safety Validation Checks (every 20 scans) ───────
             if loop_count % 20 == 0:
                 try:
@@ -1912,36 +1941,85 @@ async def main_loop():
                     # Run Brain Decision (always run to update display metrics)
                     decision = brain_decide(ticks, candles_m5, acct, risk, session, spread, sym_point, symbol=sym, candles_m1=candles_m1)
 
+                    # ── LIVE TRACE: CANDLE_TRACE (completed closed candle only) ──
+                    # MT5 returns [-1] = currently forming bar, [-2] = last CLOSED bar.
+                    # Pattern detection uses the CLOSED bar only; log both for audit.
+                    _closed_ct = None
+                    _forming_ct = None
+                    try:
+                        if isinstance(candles_m5, (list, tuple)) and len(candles_m5) >= 2:
+                            _last_c = candles_m5[-1]
+                            _prev_c = candles_m5[-2]
+                            if isinstance(_last_c, dict):
+                                _forming_ct = _last_c.get("time")
+                                _closed_ct = _prev_c.get("time")
+                            else:
+                                _forming_ct = getattr(_last_c, "time", None)
+                                _closed_ct = getattr(_prev_c, "time", None)
+                    except Exception:
+                        pass
+                    logger.info(
+                        f"[CANDLE_TRACE] symbol={sym} closed_candle_time={_closed_ct} "
+                        f"forming_candle_time={_forming_ct} pattern={decision.pattern} "
+                        f"pattern_direction={getattr(decision, 'pattern_direction', 'NA')} "
+                        f"decision_direction={decision.direction} action={decision.action}"
+                    )
+
                     if skip_trade and decision.action == "TRADE":
+                        # Log DETAILED blocking reasons (especially for SELL)
+                        block_reasons = []
+                        if not risk.can_trade(session, symbol=sym, current_equity=equity, session_refresh_active=session_refresh_active):
+                            block_reasons.append("risk.can_trade=False")
+                        if len(positions) >= max_open_trades_limit:
+                            block_reasons.append(f"positions({len(positions)})>=limit({max_open_trades_limit})")
+                        if len(sym_positions) >= getattr(cfg, 'MAX_OPEN_TRADES_PER_SYMBOL', 5):
+                            block_reasons.append(f"sym_positions({len(sym_positions)})>=limit")
+                        if not check_cooldown():
+                            block_reasons.append("cooldown_active")
+                        if min_gap_sec > 0 and time.time() - sym_last_trade < min_gap_sec:
+                            remaining = int(min_gap_sec - (time.time() - sym_last_trade))
+                            block_reasons.append(f"min_gap_cooldown({remaining}s_remaining)")
+                        
                         decision.action = "WAIT"
-                        decision.reason = "Entry blocked (cooldown/drawdown/limit)"
+                        decision.reason = f"Entry blocked: {', '.join(block_reasons)}"
+                        
+                        # CRITICAL: Log specifically for SELL blocks to diagnose why SELL never executes
+                        if decision.direction == "SELL":
+                            logger.warning(
+                                f"🚨 SELL BLOCKED: {sym} {decision.direction} | "
+                                f"Pattern: {getattr(decision, 'pattern', 'UNKNOWN')} | "
+                                f"Confidence: {decision.confidence}% | "
+                                f"Authorization: {getattr(decision, 'trade_authorization', None) is not None} | "
+                                f"Blocking Reasons: {', '.join(block_reasons)} | "
+                                f"Open Positions: {len(positions)} | "
+                                f"Sym Positions: {len(sym_positions)}"
+                            )
+                        else:
+                            logger.info(f"Entry blocked: {sym} {decision.direction} - {', '.join(block_reasons)}")
 
                     # Vetting with AI Supervisor
                     ai_approved = True
-                    if getattr(cfg, 'USE_AI_SUPERVISOR', True):
-                        ctx = {"session": session, "brain_confidence": decision.confidence}
-                        ai_res = await ai_supervisor.verify_trade(sym, decision.direction, ctx, candles_m1=candles_m1, candles_m5=candles_m5)
-                        ai_approved = ai_res.get("approved", True)
-                        if not ai_approved and decision.action == "TRADE":
-                            logger.info(f"AI Supervisor Veto for {sym}: {ai_res.get('reason')} - OVERRIDDEN by advisory mode (Grade: {decision.grade})")
+                    # -------------------------------------------------------------
+                    # HARD DAILY LOSS CIRCUIT BREAKER & SAFETY VERIFICATION
+                    # -------------------------------------------------------------
+                    if risk.is_daily_loss_limit_reached(equity):
+                        logger.warning(f"🚨 [CIRCUIT BREAKER] Daily loss limit triggered. Rejecting trade for {sym}.")
+                        decision.action = "WAIT"
+                        decision.reason = "DAILY_LOSS_LIMIT_REACHED"
 
-                    # GPT Brain override
-                    if gpt_brain:
-                        gpt_feats = [
-                            decision.regime_score, decision.structure_score, decision.entry_score,
-                            decision.confidence, decision.sl_points, decision.tp_points, decision.lot
-                        ]
-                        gpt_action, gpt_conf = gpt_brain.decide(gpt_feats)
-                        
-                        _min_conf = 50  # UPDATED: 50% confidence gate for all symbols (matching user requirement)
-                        if gpt_action == decision.direction:
-                            decision.confidence = max(decision.confidence, gpt_conf)
-                            if decision.action == "WAIT" and "Confidence" in decision.reason and decision.confidence >= _min_conf and not skip_trade:
-                                decision.action = "TRADE"
-                                decision.reason = f"GPT Brain boosted confidence to {decision.confidence}% ({decision.direction}) and upgraded to TRADE"
-                                logger.info(f"GPT Brain upgraded {sym} to TRADE: {decision.reason}")
-                        elif gpt_action == "WAIT" and decision.action == "TRADE":
-                            logger.info(f"GPT Brain advisory for {sym}: WAIT (Conf: {gpt_conf}%) — OVERRIDDEN by aggressive mode")
+                    # Canonical Trade Authorization Check:
+                    # In zero-confidence architecture, a TRADE is executed ONLY if authorized by the opportunity pipeline.
+                    has_authorization = (
+                        decision.action == "TRADE" and
+                        hasattr(decision, "trade_authorization") and
+                        decision.trade_authorization is not None and
+                        getattr(decision.trade_authorization, "authorized", False)
+                    )
+
+                    if not has_authorization and decision.action == "TRADE":
+                        logger.warning(f"[EXECUTION BLOCKED] {sym} {decision.direction} rejected: Missing valid TradeAuthorization contract.")
+                        decision.action = "WAIT"
+                        decision.reason = "UNAUTHORIZED_EXECUTION_ATTEMPT"
 
                     with state_lock:
                         shared_state["analysis"] = {
@@ -1969,8 +2047,16 @@ async def main_loop():
                             "action": decision.action,
                             "direction": decision.direction,
                             "grade": decision.grade,
-                            "timestamp": datetime.utcnow().isoformat()
+                            "timestamp": datetime.now(timezone.utc).isoformat()
                         }
+
+                    # ── LIVE TRACE: [PATTERN_ENTRY] before candidate creation ──
+                    logger.info(
+                        f"[PATTERN_ENTRY] symbol={sym} candle_time={_closed_ct} "
+                        f"pattern={decision.pattern} "
+                        f"pattern_direction={getattr(decision, 'pattern_direction', 'NA')} "
+                        f"decision_action={decision.action} decision_direction={decision.direction}"
+                    )
 
                     # If trade approved, add to candidates signals for scoring
                     if decision.action == "TRADE":
@@ -2014,7 +2100,18 @@ async def main_loop():
                     ai_approved = primary_cand["ai_approved"]
                     
                     # Final entry gate checks
-                    if len(positions) < max_open_trades_limit and check_cooldown() and risk.can_trade(session, symbol=sym, current_equity=equity):
+                    # v6.1 FIX: 'demo_unrestricted_active' was referenced but never
+                    # defined -> NameError crashed the main loop every cycle right
+                    # before execution ("Main loop error: name 'demo_unrestricted_active'
+                    # is not defined"), so queued TRADE signals were NEVER executed.
+                    # Define it from the flag: unrestricted entry gates in DEMO mode
+                    # only; LIVE mode always keeps cooldown + risk gates.
+                    demo_unrestricted_active = bool(getattr(cfg, "DEMO_MODE", True)) and bool(QX.flag("demo_unrestricted_mode"))
+                    can_execute_entry = (len(positions) < max_open_trades_limit)
+                    if not demo_unrestricted_active:
+                        can_execute_entry = can_execute_entry and check_cooldown() and risk.can_trade(session, symbol=sym, current_equity=equity)
+
+                    if can_execute_entry:
                         # Run LLM Trading Analyst Vetting
                         is_reduced_trade = False
                         try:
@@ -2066,13 +2163,25 @@ async def main_loop():
                             except Exception as explain_up_ex:
                                 logger.debug(f"Failed to enrich explanation with LLM Analyst thought: {explain_up_ex}")
                                 
-                            # Process recommendation
+                            # Process recommendation — 🔬 OBSERVATIONAL ONLY
+                            # ── ROOT CAUSE #2 FIX ── The LLM Trading Analyst must
+                            # NEVER veto a valid pattern entry. It may log, explain,
+                            # and advise, but it can never block BUY or SELL, change
+                            # direction, or turn a valid pattern into a veto.
                             llm_recommendation = verdict.get("recommendation", "reject").lower()
-                            
+                            reason_code = verdict.get("reason_code", "")
                             if llm_recommendation == "reject":
-                                logger.info(f"🚫 [LLM ANALYST VETO] Trade rejected by LLM Trading Analyst for {sym}.")
-                                telegram.send(f"🤖 <b>[LLM Analyst VETO]</b> Rejected {decision.direction} {sym}.\nReason: {verdict.get('reason_code')}\nRisk: {verdict.get('strongest_risk')}")
-                                continue
+                                logger.info(
+                                    f"🤖 [LLM ANALYST OBSERVATION] {decision.direction} {sym} "
+                                    f"rec={llm_recommendation} reason={reason_code} — "
+                                    f"advisory only, pattern trade proceeds."
+                                )
+                                telegram.send(
+                                    f"🤖 <b>[LLM Analyst ADVISORY]</b> Would reject "
+                                    f"{decision.direction} {sym} (Reason: {reason_code}) — "
+                                    f"advisory only, pattern trade proceeds."
+                                )
+
                                 
                             if llm_recommendation == "approve_reduced":
                                 is_reduced_trade = True
@@ -2092,7 +2201,57 @@ async def main_loop():
                             logger.error(f"Error running LLM Trading Analyst: {analyst_err}", exc_info=True)
                             
                         telegram.send(f"✅ Executing Ranked Signal – {decision.direction} {sym} @ {session} (Score: {primary_cand['score']} | Conf: {decision.confidence}%)")
-                        
+
+                        # ── MODULE 2B: Write challenger shadow decision before trade placement ──
+                        # Records every evaluated signal (BUY/SELL/HOLD) so the arena can
+                        # track direction balance and PF separately for the fixed Challenger.
+                        try:
+                            import json as _json_shadow
+                            _shadow_path = os.path.join(BASE_DIR, "data", "challenger_shadow_decisions.json")
+                            _shadow_data = {}
+                            if os.path.exists(_shadow_path):
+                                try:
+                                    with open(_shadow_path, "r") as _sf:
+                                        _shadow_data = _json_shadow.load(_sf)
+                                except Exception:
+                                    _shadow_data = {}
+                            _shadow_data[sym] = {
+                                "direction": decision.direction,
+                                "confidence": getattr(decision, "confidence", 0),
+                                "session": session,
+                                "timestamp": time.time(),
+                                "consensus_score": getattr(decision, "consensus_score", 0.0),
+                                "version": "aegis_v10_sell_fix_aug6",
+                            }
+                            with open(_shadow_path, "w") as _sf:
+                                _json_shadow.dump(_shadow_data, _sf, indent=2)
+                            logger.debug(f"[MODULE2B] Challenger shadow decision written: {sym} {decision.direction} @ conf={getattr(decision, 'confidence', 0)}%")
+                        except Exception as _sh_err:
+                            logger.debug(f"[MODULE2B] Shadow decision write error: {_sh_err}")
+
+                        # ── Requirement 2: FINAL DECISION IMMUTABILITY before order dispatch ──
+                        if not verify_direction_integrity(decision):
+                            logger.critical(
+                                f"[DIRECTION INTEGRITY FAILURE] {sym} execution ABORTED. "
+                                f"pattern={getattr(decision, 'pattern_direction', 'NA')} "
+                                f"final={decision.direction}. DO NOT TRADE."
+                            )
+                            telegram.send(
+                                f"🚨 <b>[DIRECTION INTEGRITY FAILURE]</b> Trade blocked for {sym}. "
+                                f"Pattern: {getattr(decision, 'pattern_direction', 'NA')} | "
+                                f"Final: {decision.direction}"
+                            )
+                            continue
+
+                        # ── LIVE TRACE: [{decision.direction}_EXECUTION_TRACE] before dispatch ──
+                        logger.info(
+                            f"[{decision.direction}_EXECUTION_TRACE] symbol={sym} "
+                            f"pattern={decision.pattern} "
+                            f"pattern_direction={getattr(decision, 'pattern_direction', 'NA')} "
+                            f"decision_direction={decision.direction} action={decision.action} "
+                            f"sl={decision.sl_points}pts tp={decision.tp_points}pts lot={decision.lot}"
+                        )
+
                         result, latency, slippage = await loop.run_in_executor(
                             executor,
                             gateway.execute_order,
@@ -2102,8 +2261,20 @@ async def main_loop():
                             decision.tp_points,
                             decision.sl_points,
                         )
+
                         last_latency = latency
-                        
+
+                        # ── LIVE TRACE: [{decision.direction}_MT5_RESULT] after dispatch ──
+                        _retcode = getattr(result, "retcode", None) if result else None
+                        logger.info(
+                            f"[{decision.direction}_MT5_RESULT] symbol={sym} "
+                            f"retcode={_retcode} "
+                            f"ticket={getattr(result, 'order', None) if result else None} "
+                            f"order_type={'ORDER_TYPE_SELL' if decision.direction == 'SELL' else 'ORDER_TYPE_BUY'} "
+                            f"price={getattr(result, 'price', None) if result else None} "
+                            f"sl={decision.sl_points}pts tp={decision.tp_points}pts"
+                        )
+
                         if result:
                             last_trade_time = time.time()
                             last_trade_time_per_sym[sym] = time.time()
@@ -2157,30 +2328,49 @@ async def main_loop():
                                 entry_price=result.price, sl=decision.sl_points, tp=decision.tp_points,
                                 lot=decision.lot, regime=decision.regime, pattern=decision.pattern,
                                 adx=decision.adx_val, rsi=decision.rsi_val, confidence=decision.confidence,
-                                session=session, atr=decision.atr_estimate
+                                session=session, atr=decision.atr_estimate,
+                                pattern_tier=getattr(decision, 'pattern_tier', 'scalp'),
+                                big_pattern_type=getattr(decision, 'big_pattern_type', 'NONE'),
+                                small_pattern_type=getattr(decision, 'small_pattern_type', 'NONE'),
+                                consensus_score=getattr(decision, 'consensus_score', 0.0),
+                                computed_rr=getattr(decision, 'rr_ratio', 0.0),
+                                invalidation_level=getattr(decision, 'invalidation_level', 0.0),
+                                pipeline_id="dual_tier_v1"
                             )
+
                             
                             technique = getattr(decision, 'signal_source', getattr(decision, 'mode', 'SCALP'))
                             telegram.send_trade_open(result, decision, spread, session, symbol=sym, technique=technique)
                             log_trade({
-                                "timestamp":      datetime.now(timezone.utc).isoformat(),
-                                "trade_id":       result.order,
-                                "symbol":         sym,
-                                "mode":           mode,
-                                "session":        session,
-                                "direction":      decision.direction,
-                                "entry_price":    result.price,
-                                "slippage_pts":   f"{slippage:.1f}",
-                                "lot":            decision.lot,
-                                "spread_at_entry": f"{spread:.0f}",
-                                "signal_score":   decision.confidence,
-                                "ai_approved":    "YES" if ai_approved else "NO",
-                                "equity_after":   f"{equity:.2f}",
+                                "timestamp":          datetime.now(timezone.utc).isoformat(),
+                                "trade_id":           result.order,
+                                "symbol":             sym,
+                                "mode":               mode,
+                                "session":            session,
+                                "direction":          decision.direction,
+                                "entry_price":        result.price,
+                                "slippage_pts":       f"{slippage:.1f}",
+                                "lot":                decision.lot,
+                                "spread_at_entry":    f"{spread:.0f}",
+                                "signal_score":       decision.confidence,
+                                "ai_approved":        "YES" if ai_approved else "NO",
+                                "equity_after":       f"{equity:.2f}",
+                                "pattern_tier":       getattr(decision, 'pattern_tier', 'scalp'),
+                                "big_pattern_type":   getattr(decision, 'big_pattern_type', 'NONE'),
+                                "small_pattern_type": getattr(decision, 'small_pattern_type', 'NONE'),
+                                "consensus_score":   getattr(decision, 'consensus_score', 0.0),
+                                "computed_rr":        getattr(decision, 'rr_ratio', 0.0),
+                                "invalidation_level": getattr(decision, 'invalidation_level', 0.0),
                             })
                             positions = await loop.run_in_executor(executor, gateway.get_open_positions)
 
-                # Execute queued signals if available
-                elif position_supervisor.signal_queue:
+                # ── ROOT CAUSE #1 FIX ─────────────────────────────────────────────
+                # Queued signals are processed INDEPENDENTLY of new candidates.
+                # Previously this was `elif signal_queue:`, so a queued SELL was
+                # starved whenever a fresh BUY candidate kept arriving (the
+                # `if candidates:` branch always won). Now a queued SELL is
+                # popped and executed every discovery cycle regardless.
+                if position_supervisor.signal_queue:
                     # Filter out expired queues (>60s)
                     position_supervisor.signal_queue = [
                         c for c in position_supervisor.signal_queue
@@ -2247,13 +2437,23 @@ async def main_loop():
                                 except Exception as explain_up_ex:
                                     logger.debug(f"Failed to enrich explanation with LLM Analyst thought: {explain_up_ex}")
                                     
-                                # Process recommendation
+                                # Process recommendation — 🔬 OBSERVATIONAL ONLY
+                                # ── ROOT CAUSE #2 FIX ── The LLM Analyst must NOT
+                                # veto queued pattern entries either. Never blocks.
                                 llm_recommendation = verdict.get("recommendation", "reject").lower()
-                                
+                                reason_code = verdict.get("reason_code", "")
                                 if llm_recommendation == "reject":
-                                    logger.info(f"🚫 [LLM ANALYST VETO] Queued trade rejected by LLM Trading Analyst for {sym}.")
-                                    telegram.send(f"🤖 <b>[LLM Analyst VETO]</b> Rejected Queued {decision.direction} {sym}.\nReason: {verdict.get('reason_code')}\nRisk: {verdict.get('strongest_risk')}")
-                                    continue
+                                    logger.info(
+                                        f"🤖 [LLM ANALYST OBSERVATION] queued {decision.direction} {sym} "
+                                        f"rec={llm_recommendation} reason={reason_code} — "
+                                        f"advisory only, pattern trade proceeds."
+                                    )
+                                    telegram.send(
+                                        f"🤖 <b>[LLM Analyst ADVISORY]</b> Would reject queued "
+                                        f"{decision.direction} {sym} (Reason: {reason_code}) — "
+                                        f"advisory only, pattern trade proceeds."
+                                    )
+
                                     
                                 if llm_recommendation == "approve_reduced":
                                     is_reduced_trade = True
@@ -2273,7 +2473,30 @@ async def main_loop():
                                 logger.error(f"Error running LLM Trading Analyst: {analyst_err}", exc_info=True)
                                 
                             telegram.send(f"✅ Executing Queued Signal – {decision.direction} {sym} @ {session} (Score: {queued_cand['score']} | Conf: {decision.confidence}%)")
-                            
+
+                            # ── Requirement 2: FINAL DECISION IMMUTABILITY before order dispatch ──
+                            if not verify_direction_integrity(decision):
+                                logger.critical(
+                                    f"[DIRECTION INTEGRITY FAILURE] {sym} QUEUED execution ABORTED. "
+                                    f"pattern={getattr(decision, 'pattern_direction', 'NA')} "
+                                    f"final={decision.direction}. DO NOT TRADE."
+                                )
+                                telegram.send(
+                                    f"🚨 <b>[DIRECTION INTEGRITY FAILURE]</b> Queued trade blocked for {sym}. "
+                                    f"Pattern: {getattr(decision, 'pattern_direction', 'NA')} | "
+                                    f"Final: {decision.direction}"
+                                )
+                                continue
+
+                            # ── LIVE TRACE: [{decision.direction}_EXECUTION_TRACE] before queued dispatch ──
+                            logger.info(
+                                f"[{decision.direction}_EXECUTION_TRACE] symbol={sym} "
+                                f"pattern={decision.pattern} "
+                                f"pattern_direction={getattr(decision, 'pattern_direction', 'NA')} "
+                                f"decision_direction={decision.direction} action={decision.action} "
+                                f"sl={decision.sl_points}pts tp={decision.tp_points}pts lot={decision.lot}"
+                            )
+
                             result, latency, slippage = await loop.run_in_executor(
                                 executor,
                                 gateway.execute_order,
@@ -2284,7 +2507,18 @@ async def main_loop():
                                 decision.sl_points,
                             )
                             last_latency = latency
-                            
+
+                            # ── LIVE TRACE: [{decision.direction}_MT5_RESULT] after queued dispatch ──
+                            _retcode = getattr(result, "retcode", None) if result else None
+                            logger.info(
+                                f"[{decision.direction}_MT5_RESULT] symbol={sym} "
+                                f"retcode={_retcode} "
+                                f"ticket={getattr(result, 'order', None) if result else None} "
+                                f"order_type={'ORDER_TYPE_SELL' if decision.direction == 'SELL' else 'ORDER_TYPE_BUY'} "
+                                f"price={getattr(result, 'price', None) if result else None} "
+                                f"sl={decision.sl_points}pts tp={decision.tp_points}pts"
+                            )
+
                             if result:
                                 last_trade_time = time.time()
                                 last_trade_time_per_sym[sym] = time.time()
@@ -2338,25 +2572,39 @@ async def main_loop():
                                     entry_price=result.price, sl=decision.sl_points, tp=decision.tp_points,
                                     lot=decision.lot, regime=decision.regime, pattern=decision.pattern,
                                     adx=decision.adx_val, rsi=decision.rsi_val, confidence=decision.confidence,
-                                    session=session, atr=decision.atr_estimate
+                                    session=session, atr=decision.atr_estimate,
+                                    pattern_tier=getattr(decision, 'pattern_tier', 'scalp'),
+                                    big_pattern_type=getattr(decision, 'big_pattern_type', 'NONE'),
+                                    small_pattern_type=getattr(decision, 'small_pattern_type', 'NONE'),
+                                    consensus_score=getattr(decision, 'consensus_score', 0.0),
+                                    computed_rr=getattr(decision, 'rr_ratio', 0.0),
+                                    invalidation_level=getattr(decision, 'invalidation_level', 0.0),
+                                    pipeline_id="dual_tier_v1"
                                 )
+
                                 
                                 technique = getattr(decision, 'signal_source', getattr(decision, 'mode', 'SCALP'))
                                 telegram.send_trade_open(result, decision, spread, session, symbol=sym, technique=technique)
                                 log_trade({
-                                    "timestamp":      datetime.now(timezone.utc).isoformat(),
-                                    "trade_id":       result.order,
-                                    "symbol":         sym,
-                                    "mode":           mode,
-                                    "session":        session,
-                                    "direction":      decision.direction,
-                                    "entry_price":    result.price,
-                                    "slippage_pts":   f"{slippage:.1f}",
-                                    "lot":            decision.lot,
-                                    "spread_at_entry": f"{spread:.0f}",
-                                    "signal_score":   decision.confidence,
-                                    "ai_approved":    "YES" if ai_approved else "NO",
-                                    "equity_after":   f"{equity:.2f}",
+                                    "timestamp":          datetime.now(timezone.utc).isoformat(),
+                                    "trade_id":           result.order,
+                                    "symbol":             sym,
+                                    "mode":               mode,
+                                    "session":            session,
+                                    "direction":          decision.direction,
+                                    "entry_price":        result.price,
+                                    "slippage_pts":       f"{slippage:.1f}",
+                                    "lot":                decision.lot,
+                                    "spread_at_entry":    f"{spread:.0f}",
+                                    "signal_score":       decision.confidence,
+                                    "ai_approved":        "YES" if ai_approved else "NO",
+                                    "equity_after":       f"{equity:.2f}",
+                                    "pattern_tier":       getattr(decision, 'pattern_tier', 'scalp'),
+                                    "big_pattern_type":   getattr(decision, 'big_pattern_type', 'NONE'),
+                                    "small_pattern_type": getattr(decision, 'small_pattern_type', 'NONE'),
+                                    "consensus_score":   getattr(decision, 'consensus_score', 0.0),
+                                    "computed_rr":        getattr(decision, 'rr_ratio', 0.0),
+                                    "invalidation_level": getattr(decision, 'invalidation_level', 0.0),
                                 })
                                 positions = await loop.run_in_executor(executor, gateway.get_open_positions)
 
@@ -2470,6 +2718,7 @@ def main():
     # Dashboard handled by serve.js or accessed manually
     # webbrowser.open("http://localhost:5173")
 
+    logging.getLogger('werkzeug').setLevel(logging.ERROR)
     flask_thread = threading.Thread(
         target=lambda: api.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False),
         daemon=True,
@@ -2483,7 +2732,8 @@ def main():
         logger.warning("[KELLY GATE] Validation skipped due to error: %s", _kv_ex)
 
     # MANDATORY BROKER-SIDE HARD SL FLOOR ASSERTION
-    if not gateway.verify_sl_enforcement():
+    _check_gw = MT5Gateway()
+    if not _check_gw.verify_sl_enforcement():
         logger.critical("☠️ [CRITICAL SAFETY FAILURE] Broker-side hard SL enforcement check failed! Refusing to start bot.")
         print("☠️ [CRITICAL SAFETY FAILURE] Broker-side hard SL enforcement check failed! Refusing to start bot.")
         sys.exit(1)

@@ -11,6 +11,7 @@ import logging
 from collections import deque
 from datetime import datetime, timezone
 
+from typing import Optional, Dict, Any, List, Set, Tuple
 from config import settings as cfg
 
 logger = logging.getLogger("aegis.risk")
@@ -68,6 +69,7 @@ class RiskManager:
         self._kelly_lot_last: float = 0.0        # last computed Kelly lot
         self._kelly_hard_cap_active: bool = False # was 2% hard cap the binding constraint?
         self._cvar_alert_sent: bool = False       # prevent duplicate Telegram alerts per session
+        self._partial_taken_tickets: set = set()   # set of ticket IDs where partial TP was taken
 
     # ── Telegram ──────────────────────────────────────────────
 
@@ -96,7 +98,7 @@ class RiskManager:
         self.stop_today         = False
         self.is_paused          = False
         self.manual_pause       = False
-        logger.info("Daily state reset — equity=%.2f date=%s", equity, today)
+        logger.info("Daily state reset ? equity=%.2f date=%s", equity, today)
 
     def check_daily_reset(self):
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -108,8 +110,36 @@ class RiskManager:
 
     # ── LAYER 1: Daily Drawdown Kill Switch ───────────────────
 
+    DAILY_MAX_LOSS_USD: float = 500.0  # Hard dollar loss limit per trading day
+
+    def is_daily_loss_limit_reached(self, current_equity: Optional[float] = None) -> bool:
+        """Checks if daily loss circuit breaker has triggered."""
+        if self.stop_today:
+            return True
+        if self.start_equity <= 0:
+            return False
+        
+        eq = current_equity
+        if eq is None and self.gateway:
+            acct = self.gateway.get_account_info()
+            if acct:
+                eq = acct.get("equity", self.start_equity)
+        
+        if eq is not None:
+            loss_usd = self.start_equity - eq
+            if loss_usd >= self.DAILY_MAX_LOSS_USD:
+                self.stop_today = True
+                self._alert(
+                    f"🚨 [CIRCUIT BREAKER] Daily loss limit reached: -${loss_usd:.2f} >= ${self.DAILY_MAX_LOSS_USD:.2f}. "
+                    f"Trading halted for remainder of the day."
+                )
+                return True
+        return False
+
     def check_daily_loss(self, current_equity: float) -> bool:
-        # User requested unlimited trading; daily drawdown limit disabled.
+        """Active daily drawdown protection."""
+        if self.is_daily_loss_limit_reached(current_equity):
+            return False
         return True
 
     # ── LAYER 2: Daily Profit Target ──────────────────────────
@@ -169,13 +199,32 @@ class RiskManager:
             self.today_losses       += 1
             self.last_loss_time     = time.time()  # Track loss time for cooldown
             if self.consecutive_losses >= cfg.MAX_CONSECUTIVE_LOSSES:
-                self.is_paused = True
-                self.pause_until = time.time() + cfg.COOLDOWN_AFTER_CONSEC_LOSSES
-                self._alert(
-                    f"⏸ PAUSE — {self.consecutive_losses} consecutive losses.\n"
-                    f"Cooling down for {cfg.COOLDOWN_AFTER_CONSEC_LOSSES}s.\n"
-                    f"Send /resume to override."
-                )
+                is_demo = True
+                if self.gateway and hasattr(self.gateway, "get_account_info"):
+                    acct = self.gateway.get_account_info()
+                    if acct and (str(acct.get("trade_mode", "")).upper() in ("REAL", "LIVE")):
+                        is_demo = False
+
+                from config.quant_x_config import QX
+                unrestricted_demo = (QX.get("demo_unrestricted_mode", False) and is_demo) or getattr(cfg, "FORCE_NEVER_PAUSE", False) or getattr(cfg, "MAXIMUM_TRADING_MODE", False)
+
+                if unrestricted_demo:
+                    logger.warning(
+                        "[TESTING MODE] %d consecutive losses — auto-pause BYPASSED for continuous testing data collection.",
+                        self.consecutive_losses
+                    )
+                    self._alert(
+                        f"ℹ️ <b>[TESTING MODE]</b> {self.consecutive_losses} consecutive losses.\n"
+                        f"Auto-pause PERMANENTLY BYPASSED for testing mode. Bot remains 100% active."
+                    )
+                else:
+                    self.is_paused = True
+                    self.pause_until = time.time() + cfg.COOLDOWN_AFTER_CONSEC_LOSSES
+                    self._alert(
+                        f"⏸ PAUSE — {self.consecutive_losses} consecutive losses.\n"
+                        f"Cooling down for {cfg.COOLDOWN_AFTER_CONSEC_LOSSES}s.\n"
+                        f"Send /resume to override."
+                    )
 
     def check_auto_resume(self):
         if self.stop_today or self.manual_pause:
@@ -200,63 +249,148 @@ class RiskManager:
     def daily_trades_ok(self) -> bool:
         return self.daily_trades < cfg.MAX_DAILY_TRADES
 
-    # ── LAYER 6: Break-Even Monitor ───────────────────────────
+    # ── LAYER 6: Structural Break-Even & Partial TP Monitor ──────
 
-    def check_breakeven(self, position):
+    def check_breakeven(self, position, pattern_tier: str = "scalp"):
+        """
+        LAYER 6: Structural Break-Even & Partial TP Monitor.
+
+        Phase 1 Recovery Fix:
+        - Requires profit >= 1.0R (initial SL distance in points) BEFORE moving SL to BE.
+          This prevents noise whipsaws from stopping out trades at tiny 0.2R gains.
+        - At 1.0R profit, banks 50% partial profit (if lot > 0.01) and moves remaining SL to BE + buffer.
+        """
         try:
+            tier = getattr(position, "pattern_tier", pattern_tier) or pattern_tier
             symbol     = position.symbol
             profit_pts = self._position_profit_pts(position)
-            trigger_pts = cfg.get_symbol_config(symbol).get("breakeven_trigger_pts", cfg.BREAKEVEN_TRIGGER_PTS)
-            guaranteed_pts = getattr(cfg, 'GUARANTEED_BREAKEVEN_PROFIT_PTS', 10)
-            
-            info = self.gateway.symbols_data.get(symbol, {})
-            point = info.get("point", 0.00001)
-            digits = info.get("digits", 5)
+
+            info   = self.gateway.symbols_data.get(symbol, {}) if self.gateway else {}
+            point  = info.get("point", 0.01 if "XAU" in symbol.upper() else 0.00001)
+            digits = info.get("digits", 2 if "XAU" in symbol.upper() else 5)
             if point <= 0:
                 return
 
-            if profit_pts >= trigger_pts:
-                if position.type == 0:  # BUY
-                    be_sl = round(position.price_open + guaranteed_pts * point, digits)
-                    if position.sl < be_sl:
-                        ok = self.gateway.modify_sl(position.ticket, symbol, be_sl)
-                        if ok:
-                            self._alert(f"Profit lock-in set (+{guaranteed_pts}pts) — {symbol} #{position.ticket}")
-                else:  # SELL
-                    be_sl = round(position.price_open - guaranteed_pts * point, digits)
-                    if position.sl == 0 or position.sl > be_sl:
-                        ok = self.gateway.modify_sl(position.ticket, symbol, be_sl)
-                        if ok:
-                            self._alert(f"Profit lock-in set (+{guaranteed_pts}pts) — {symbol} #{position.ticket}")
+            # Compute initial SL distance in points (1.0R)
+            if hasattr(position, "sl") and position.sl > 0:
+                initial_sl_pts = abs(position.price_open - position.sl) / point
+            else:
+                initial_sl_pts = 150.0 if "XAU" in symbol.upper() else 40.0
+
+            # Enforce 1.5R minimum trigger for break-even (raised from 1.0R).
+            # Previously at 1.0R, BE was firing too early and stopping winners before they
+            # could develop to 2.0R+. The 50% partial TP bank still fires at 1.0R.
+            one_r_pts          = initial_sl_pts
+            lock_trigger_pts   = max(initial_sl_pts * 1.5, 150.0 if "XAU" in symbol.upper() else 40.0)
+            be_buffer_pts      = float(getattr(cfg, "SCALP_BREAKEVEN_BUFFER_PTS", 10.0))
+            is_buy             = (position.type == 0)
+            ticket             = position.ticket
+
+            # 1. Partial TP Execution: Bank 50% profit at 1.0R if lot > 0.01.
+            # This MUST fire at 1.0R independent of the 1.5R BE gate.
+            vol = getattr(position, "volume", 0.01)
+            if (profit_pts >= one_r_pts and
+                    ticket not in self._partial_taken_tickets and
+                    vol >= 0.02 and self.gateway):
+                partial_vol = round(vol / 2.0, 2)
+                if partial_vol > 0:
+                    res = self.gateway.close_partial_position(position, partial_vol)
+                    if res:
+                        self._partial_taken_tickets.add(ticket)
+                        logger.info(
+                            "[PARTIAL TP BANKED] %s #%d closed %.2f lots @ 1.0R profit (%.0fpts)",
+                            symbol, ticket, partial_vol, profit_pts
+                        )
+                        self._alert(
+                            f"💰 [PARTIAL TP BANKED] {symbol} #{ticket}\n"
+                            f"Banked {partial_vol} lots @ 1.0R (+{profit_pts:.0f}pts)."
+                        )
+
+            if profit_pts < lock_trigger_pts:
+                return  # Profit has not reached 1.5R yet — do NOT move stop to BE
+
+            # 2. Move SL to Break-Even + Buffer
+            if is_buy:
+                be_sl = round(position.price_open + be_buffer_pts * point, digits)
+                if position.sl < be_sl:
+                    ok = self.gateway.modify_sl(ticket, symbol, be_sl) if self.gateway else False
+                    if ok:
+                        logger.info(
+                            "[1R PROFIT LOCK] %s #%d profit=%.0fpts (>= 1.0R %.0fpts) SL moved to BE+%.0fpts",
+                            symbol, ticket, profit_pts, lock_trigger_pts, be_buffer_pts
+                        )
+                        self._alert(
+                            f"🔒 [1R PROFIT LOCK] {symbol} #{ticket}\n"
+                            f"Profit {profit_pts:.0f}pts >= 1.0R ({lock_trigger_pts:.0f}pts).\n"
+                            f"SL moved to breakeven +{be_buffer_pts:.0f}pts."
+                        )
+            else:  # SELL
+                be_sl = round(position.price_open - be_buffer_pts * point, digits)
+                if position.sl == 0 or position.sl > be_sl:
+                    ok = self.gateway.modify_sl(ticket, symbol, be_sl) if self.gateway else False
+                    if ok:
+                        logger.info(
+                            "[1R PROFIT LOCK] %s #%d profit=%.0fpts (>= 1.0R %.0fpts) SL moved to BE+%.0fpts",
+                            symbol, ticket, profit_pts, lock_trigger_pts, be_buffer_pts
+                        )
+                        self._alert(
+                            f"🔒 [1R PROFIT LOCK] {symbol} #{ticket}\n"
+                            f"Profit {profit_pts:.0f}pts >= 1.0R ({lock_trigger_pts:.0f}pts).\n"
+                            f"SL moved to breakeven +{be_buffer_pts:.0f}pts."
+                        )
         except Exception as exc:
             logger.error("Breakeven error: %s", exc)
 
     # ── LAYER 7: Trailing Stop ────────────────────────────────
 
-    def check_trailing_stop(self, position):
+    def check_trailing_stop(self, position, pattern_tier: str = "scalp"):
+        """
+        LAYER 7: Structural Trailing Stop.
+
+        Phase 2 Fix (Aug-6):
+        - Trailing stop activates AFTER profit >= 2.0R (2.0x initial SL distance).
+          Previously 1.2R — this was firing too early and closing winners at 0.4R.
+        - Trails at 1.2R distance behind price (previously 0.8R which was causing
+          0.21R average winner closes as the tight trail fired on normal pullbacks).
+        - Gold minimum trail distance: 180 points (absorbs noise without stopping out).
+        """
         try:
             symbol     = position.symbol
             profit_pts = self._position_profit_pts(position)
-            if profit_pts < cfg.TRAIL_TRIGGER_PTS:
+
+            info   = self.gateway.symbols_data.get(symbol, {}) if self.gateway else {}
+            point  = info.get("point", 0.01 if "XAU" in symbol.upper() else 0.00001)
+            digits = info.get("digits", 2 if "XAU" in symbol.upper() else 5)
+            if point <= 0:
                 return
 
-            info = self.gateway.symbols_data.get(symbol)
-            if not info:
-                return
+            if hasattr(position, "sl") and position.sl > 0:
+                initial_sl_pts = abs(position.price_open - position.sl) / point
+            else:
+                initial_sl_pts = 150.0 if "XAU" in symbol.upper() else 40.0
 
-            point  = info["point"]
-            digits = info["digits"]
+            # Trigger at 2.0R (was 1.2R) — let the winner develop before trailing
+            trail_trigger_pts  = initial_sl_pts * 2.0
+            # Trail at 1.2R behind price (was 0.8R) — wider room prevents early trail-out
+            trail_distance_pts = initial_sl_pts * 1.2
+            # Hard minimum trail distance: 180pts for Gold (absorbs 2-3 bar normal noise)
+            if "XAU" in symbol.upper():
+                trail_distance_pts = max(trail_distance_pts, 180.0)
+
+            if profit_pts < trail_trigger_pts:
+                return
 
             if position.type == 0:  # BUY
-                new_sl = round(position.price_current - cfg.TRAIL_DISTANCE_PTS * point, digits)
-                if new_sl > position.sl:
+                new_sl = round(position.price_current - trail_distance_pts * point, digits)
+                if new_sl > position.sl and self.gateway:
                     self.gateway.modify_sl(position.ticket, symbol, new_sl)
             else:  # SELL
-                new_sl = round(position.price_current + cfg.TRAIL_DISTANCE_PTS * point, digits)
-                if position.sl == 0 or new_sl < position.sl:
+                new_sl = round(position.price_current + trail_distance_pts * point, digits)
+                if (position.sl == 0 or new_sl < position.sl) and self.gateway:
                     self.gateway.modify_sl(position.ticket, symbol, new_sl)
         except Exception as exc:
             logger.error("Trailing stop error: %s", exc)
+
 
     # ── LAYER 8: Time Stop ────────────────────────────────────
 
@@ -490,6 +624,13 @@ class RiskManager:
 
     def can_trade(self, session: str = "LONDON", symbol: str = "", direction: str = "", 
                   current_equity: float = 0.0, session_refresh_active: bool = False) -> bool:
+        if getattr(cfg, "FORCE_NEVER_PAUSE", False) or getattr(cfg, "MAXIMUM_TRADING_MODE", False):
+            self.is_paused = False
+            self.manual_pause = False
+            self.stop_today = False
+            self.consecutive_losses = 0
+            return True
+
         self.check_auto_resume()  # Check if we should auto-resume from pause
         if self.is_locked() or self.stop_today or self.manual_pause:
             return False
@@ -641,26 +782,104 @@ class RiskManager:
             return base_lot
 
 
-    def atr_scaled_sl_tp(self, symbol: str, atr_pts: float, confidence: int = 50) -> dict:
+    def check_cost_adjusted_edge(self, symbol: str, tp_pts: int, sl_pts: int, spread_pts: float, win_prob: float = None) -> dict:
+        """
+        Issue 3 Fix: Cost & Spread-Adjusted Expected Value (EV) Gate.
+        
+        Calculates round-trip transaction cost (spread + commission) and checks:
+        1. TP distance >= 3.0 * round_trip_cost (clears cost by 3x margin)
+        2. Expected Value (EV) after round-trip cost is strictly > 0.0
+
+        Args:
+            symbol: Trading symbol ("XAUUSD", "EURUSD", etc.)
+            tp_pts: Planned TP distance in points
+            sl_pts: Planned SL distance in points
+            spread_pts: Current market spread in points
+            win_prob: Win probability (if None, dynamically fetches rolling win rate from DB)
+
+        Returns:
+            {"approved": bool, "ev_usd": float, "cost_pts": float, "min_tp_required": int, "rejection_reason": str}
+        """
+        if win_prob is None or win_prob <= 0.0:
+            try:
+                from modules.performance import get_rolling_win_rate
+                win_prob = get_rolling_win_rate(last_n=20, default=0.55)
+            except Exception:
+                win_prob = 0.55
+
+        is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+        # Estimated commission in points (Exness/RoboForex cent/standard: ~$0.05-$0.10 per 0.01 lot on Gold = 5-10 points)
+        commission_pts = 10.0 if is_gold else 4.0
+        round_trip_cost_pts = max(1.0, spread_pts + commission_pts)
+
+        # Mandatory TP floor: TP must be at least 3x round-trip cost
+        min_tp_required = int(math.ceil(round_trip_cost_pts * 3.0))
+
+        # EV Calculation (in points):
+        # EV = (Win_Prob * (TP - Cost)) - ((1 - Win_Prob) * (SL + Cost))
+        net_win_pts  = tp_pts - round_trip_cost_pts
+        net_loss_pts = sl_pts + round_trip_cost_pts
+        ev_pts       = (win_prob * net_win_pts) - ((1.0 - win_prob) * net_loss_pts)
+
+        # Dollar EV conversion for 0.01 lot
+        point_val = 0.01 if is_gold else 0.0001
+        ev_usd    = ev_pts * point_val
+
+        approved = True
+        rejection_reason = ""
+
+        if tp_pts < min_tp_required:
+            approved = False
+            rejection_reason = (
+                f"TP distance ({tp_pts}pts) < 3.0x round-trip cost ({round_trip_cost_pts:.1f}pts -> min TP {min_tp_required}pts required). "
+                f"Risk of $0.00 close on TP hit."
+            )
+        elif ev_pts <= 0.0:
+            approved = False
+            rejection_reason = (
+                f"Negative cost-adjusted EV ({ev_pts:.1f}pts / ${ev_usd:.2f}). "
+                f"Spread ({spread_pts:.0f}pts) + Commission ({commission_pts:.0f}pts) eats edge."
+            )
+
+        logger.info(
+            f"[COST CHECK] {symbol} TP:{tp_pts}pts SL:{sl_pts}pts Spread:{spread_pts:.0f}pts "
+            f"Cost:{round_trip_cost_pts:.1f}pts minTP:{min_tp_required}pts EV:{ev_pts:.1f}pts (${ev_usd:.2f}) "
+            f"Approved:{approved} {rejection_reason}"
+        )
+
+        return {
+            "approved": approved,
+            "ev_pts": round(ev_pts, 2),
+            "ev_usd": round(ev_usd, 3),
+            "cost_pts": round(round_trip_cost_pts, 1),
+            "min_tp_required": min_tp_required,
+            "rejection_reason": rejection_reason
+        }
+
+    def atr_scaled_sl_tp(self, symbol: str, atr_pts: float, confidence: int = 50, spread_pts: float = 20.0) -> dict:
         """
         Returns ATR-regime-aware SL and TP distances in points (Phase 2).
         SL = clamp(ATR(14) * k, 150, 400) points.
-        Scalp TP floor = 350 to 600 points to clear broker spread drag.
+        Scalp TP floor = 350 to 600 points to clear broker spread drag (Issue 3 Fix).
 
         Args:
             symbol:     Trading symbol (e.g. "XAUUSD")
             atr_pts:    Current ATR in points (pass 0.0 to use safe defaults)
             confidence: Brain confidence score — higher confidence extends TP slightly
+            spread_pts: Current spread in points to enforce cost clearance
 
         Returns:
             {"sl_pts": int, "tp_pts": int, "rr_ratio": float, "regime": str}
         """
         is_gold = ("XAU" in symbol.upper())
+        commission_pts = 10.0 if is_gold else 4.0
+        round_trip_cost = max(1.0, spread_pts + commission_pts)
 
         if is_gold:
             sl_floor = 150  # 150 pts ($1.50 Gold move) - sits outside 1-minute noise
             sl_cap   = 400  # 400 pts ($4.00 Gold move)
-            tp_floor = 350  # 350 pts ($3.50 Gold move) - clears 15-35pt spread drag
+            # Ensure TP floor clears round-trip cost by at least 3x
+            tp_floor = max(390, int(math.ceil(round_trip_cost * 3.0)))
             tp_cap   = 600  # 600 pts ($6.00 Gold move max scalp target)
 
             k_multiplier = 1.8  # k tuned against Phase 0 MAE data
@@ -668,15 +887,15 @@ class RiskManager:
                 raw_sl = atr_pts * k_multiplier
                 sl = int(max(sl_floor, min(sl_cap, raw_sl)))
                 
-                # Scalp R:R ratio = 1.8x to 2.2x depending on confidence
-                rr_target = 1.8 if confidence < 70 else 2.2
+                # Scalp R:R ratio = 2.0x to 2.5x depending on confidence
+                rr_target = 2.0 if confidence < 70 else 2.5
                 raw_tp = sl * rr_target
                 tp = int(max(tp_floor, min(tp_cap, raw_tp)))
                 regime = "atr_scaled"
             else:
                 regime = "default_safe"
                 sl = sl_floor  # 150 pts
-                tp = tp_floor  # 350 pts
+                tp = max(tp_floor, sl_floor * 2)  # 390 pts (>= 2.6R)
 
             if confidence >= 70:
                 tp = min(tp_cap, tp + 50)
@@ -684,28 +903,158 @@ class RiskManager:
         else:
             sl_floor = 40
             sl_cap   = 120
-            tp_floor = 80
+            tp_floor = max(80, int(math.ceil(round_trip_cost * 3.0)))
             tp_cap   = 200
 
             if atr_pts > 0:
                 regime = "atr_scaled"
                 sl = int(max(sl_floor, min(sl_cap, atr_pts * 1.5)))
-                tp = int(max(tp_floor, min(tp_cap, sl * 1.8)))
+                tp = int(max(tp_floor, min(tp_cap, sl * 2.0)))
             else:
                 regime = "default"
                 sl = sl_floor
-                tp = tp_floor
+                tp = max(tp_floor, sl_floor * 2)
 
-        # Hard guarantees
+        # Hard guarantees: TP must clear 2.0x SL and 3x cost
         sl = max(sl, sl_floor)
-        tp = max(tp, int(sl * 1.5))
+        tp = max(tp, max(int(sl * 2.0), int(math.ceil(round_trip_cost * 3.0))))
         rr = round(tp / sl, 2) if sl > 0 else 0.0
 
         logger.debug(
-            "[RiskMgr] atr_scaled_sl_tp %s atr=%.1fpts regime=%s sl=%dpts tp=%dpts rr=%.2f",
-            symbol, atr_pts, regime, sl, tp, rr
+            "[RiskMgr] atr_scaled_sl_tp %s atr=%.1fpts regime=%s sl=%dpts tp=%dpts rr=%.2f spread=%.0fpts",
+            symbol, atr_pts, regime, sl, tp, rr, spread_pts
         )
         return {"sl_pts": sl, "tp_pts": tp, "rr_ratio": rr, "regime": regime}
+
+    def dual_tier_sl_tp(
+        self,
+        symbol: str,
+        tier: str,                  # "scalp" or "pro_trend"
+        direction: str,             # "BUY" or "SELL"
+        entry_price: float,
+        invalidation_level: float,
+        atr_pts: float = 0.0,
+        point: float = 0.01
+    ) -> dict:
+        """
+        SECTION 3 — DUAL-TIER SL/TP ENGINE (extends ATR-scaled plan)
+        
+        Tier Scalp (small pattern):
+          - SL: 150-200 pts, or beyond invalidation_level (whichever wider)
+          - TP: 350-600 pts
+          - Min R:R: >= 2.0
+          
+        Tier Pro Trend (big pattern continuation):
+          - SL: 300-500 pts, or beyond invalidation_level (whichever wider)
+          - TP: 1000-2500 pts
+          - Min R:R: >= 3.0
+          
+        Rules:
+          - SL is never tighter than structural invalidation level.
+          - If computed R:R < min_rr, reject the trade (approved=False). Do NOT shrink SL to force R:R.
+        """
+        is_gold = ("XAU" in symbol.upper())
+        pt = point if point > 0 else (0.01 if is_gold else 0.00001)
+
+        # Calculate structural SL in points
+        structural_sl_pts = 0
+        if invalidation_level > 0 and entry_price > 0:
+            if direction.upper() in ("BUY", "BULLISH"):
+                structural_sl_pts = int(math.ceil((entry_price - invalidation_level) / pt))
+            elif direction.upper() in ("SELL", "BEARISH"):
+                structural_sl_pts = int(math.ceil((invalidation_level - entry_price) / pt))
+
+        structural_sl_pts = max(0, structural_sl_pts)
+
+        if tier.lower() == "scalp":
+            sl_floor, sl_cap = 150, 200
+            tp_floor, tp_cap = 390, 600
+            min_rr = 2.0
+        else:  # pro_trend
+            sl_floor, sl_cap = 300, 500
+            tp_floor, tp_cap = 1000, 2500
+            min_rr = 3.0
+
+        if not is_gold:
+            sl_floor = int(sl_floor * 0.2)
+            sl_cap   = int(sl_cap * 0.2)
+            tp_floor = int(tp_floor * 0.2)
+            tp_cap   = int(tp_cap * 0.2)
+
+        # SL determination: wider of floor or structural SL
+        raw_sl = max(sl_floor, structural_sl_pts)
+        if atr_pts > 0:
+            raw_sl = max(raw_sl, int(atr_pts * 1.5))
+            
+        sl_pts = max(structural_sl_pts, min(sl_cap, raw_sl)) if structural_sl_pts <= sl_cap else structural_sl_pts
+
+        # TP determination: target based on min_rr with room up to tp_cap
+        target_tp = int(sl_pts * min_rr)
+        tp_pts = max(tp_floor, min(tp_cap, target_tp))
+
+        computed_rr = round(tp_pts / sl_pts, 2) if sl_pts > 0 else 0.0
+
+        approved = True
+        rejection_reason = ""
+
+        if computed_rr < min_rr:
+            approved = False
+            rejection_reason = f"Computed R:R ({computed_rr:.2f}) is below tier '{tier}' minimum ({min_rr:.1f})"
+
+        logger.info(
+            f"[RiskMgr] Dual-Tier SL/TP ({tier}): {symbol} {direction} entry={entry_price:.2f} "
+            f"inval={invalidation_level:.2f} -> SL:{sl_pts}pts TP:{tp_pts}pts RR:{computed_rr} "
+            f"approved={approved} {rejection_reason}"
+        )
+
+        return {
+            "approved": approved,
+            "sl_pts": sl_pts,
+            "tp_pts": tp_pts,
+            "rr_ratio": computed_rr,
+            "tier": tier,
+            "rejection_reason": rejection_reason,
+            "min_rr": min_rr
+        }
+
+    def validate_directional_sl_tp(self, symbol: str, direction: str, entry_price: float, sl_price: float, tp_price: float) -> dict:
+        """
+        Directional SL/TP Validation Guard:
+        Ensures BUY orders strictly have SL < entry_price and TP > entry_price.
+        Ensures SELL orders strictly have SL > entry_price and TP < entry_price.
+        """
+        if not direction or entry_price <= 0.0:
+            return {"approved": True, "rejection_reason": ""}
+        
+        dir_norm = direction.upper().strip()
+        is_buy = dir_norm in ("BUY", "BULLISH")
+        is_sell = dir_norm in ("SELL", "BEARISH")
+        
+        if is_buy:
+            if sl_price > 0.0 and sl_price >= entry_price:
+                return {
+                    "approved": False,
+                    "rejection_reason": f"BUY SL Violation: SL ({sl_price:.5f}) >= Entry ({entry_price:.5f})"
+                }
+            if tp_price > 0.0 and tp_price <= entry_price:
+                return {
+                    "approved": False,
+                    "rejection_reason": f"BUY TP Violation: TP ({tp_price:.5f}) <= Entry ({entry_price:.5f})"
+                }
+        elif is_sell:
+            if sl_price > 0.0 and sl_price <= entry_price:
+                return {
+                    "approved": False,
+                    "rejection_reason": f"SELL SL Violation: SL ({sl_price:.5f}) <= Entry ({entry_price:.5f})"
+                }
+            if tp_price > 0.0 and tp_price >= entry_price:
+                return {
+                    "approved": False,
+                    "rejection_reason": f"SELL TP Violation: TP ({tp_price:.5f}) >= Entry ({entry_price:.5f})"
+                }
+                
+        return {"approved": True, "rejection_reason": ""}
+
 
 
 
@@ -880,7 +1229,7 @@ class RiskManager:
             return kelly_lot
 
         except Exception as exc:
-            logger.error("[KELLY] kelly_lot_compute error: %s — using base_lot", exc)
+            logger.error("[KELLY] kelly_lot_compute error: %s ? using base_lot", exc)
             return base_lot
 
     def get_status_dict(self) -> dict:

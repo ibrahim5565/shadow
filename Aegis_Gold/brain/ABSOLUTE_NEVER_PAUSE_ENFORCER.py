@@ -81,8 +81,8 @@ class AbsoluteNeverPauseEnforcer:
             'automatic_pause': False
         }
         
-        logger.info("🚫 ABSOLUTE NEVER PAUSE ENFORCER ACTIVATED")
-        logger.info("⚡ NOTHING CAN STOP THIS BOT - GUARANTEED!")
+        logger.info("? ABSOLUTE NEVER PAUSE ENFORCER ACTIVATED")
+        logger.info("? NOTHING CAN STOP THIS BOT - GUARANTEED!")
         
         self.start_all_monitors()
         self.override_all_signals()
@@ -106,7 +106,7 @@ class AbsoluteNeverPauseEnforcer:
             )
             thread.start()
             self.monitoring_threads.append(thread)
-            logger.info(f"✅ Started: {name}")
+            logger.info(f"[OK] Started: {name}")
 
     def run_monitor(self, name, target, interval):
         """Run a monitoring thread"""
@@ -115,7 +115,7 @@ class AbsoluteNeverPauseEnforcer:
                 target()
                 time.sleep(interval)
             except Exception as e:
-                logger.error(f"❌ {name} error: {e}")
+                logger.error(f"[ERR] {name} error: {e}")
                 time.sleep(interval)
 
     def file_monitor(self):
@@ -184,12 +184,12 @@ class AbsoluteNeverPauseEnforcer:
                 try:
                     os.remove(pause_file)
                     removed_count += 1
-                    logger.warning(f"🗑️ REMOVED PAUSE FILE: {pause_file}")
+                    logger.warning(f"?? REMOVED PAUSE FILE: {pause_file}")
                 except Exception as e:
-                    logger.error(f"❌ Could not remove {pause_file}: {e}")
+                    logger.error(f"[ERR] Could not remove {pause_file}: {e}")
         
         if removed_count > 0:
-            logger.warning(f"🚫 BLOCKED {removed_count} PAUSE ATTEMPTS!")
+            logger.warning(f"? BLOCKED {removed_count} PAUSE ATTEMPTS!")
 
     def settings_monitor(self):
         """Override ALL settings that could pause trading"""
@@ -245,7 +245,7 @@ class AbsoluteNeverPauseEnforcer:
                 pass  # Settings not loaded yet
                 
         except Exception as e:
-            logger.error(f"❌ Settings monitor error: {e}")
+            logger.error(f"[ERR] Settings monitor error: {e}")
 
     def process_monitor(self):
         """Monitor processes and restart if needed"""
@@ -260,11 +260,11 @@ class AbsoluteNeverPauseEnforcer:
             
             for process_file, name in processes_to_check:
                 if not self.is_process_running(process_file):
-                    logger.warning(f"⚠️ {name} not running - FORCE RESTART!")
+                    logger.warning(f"[WARN] {name} not running - FORCE RESTART!")
                     self.force_restart_process(process_file, name)
         
         except Exception as e:
-            logger.error(f"❌ Process monitor error: {e}")
+            logger.error(f"[ERR] Process monitor error: {e}")
 
     def is_process_running(self, process_name):
         """Check if a process is running"""
@@ -294,9 +294,9 @@ class AbsoluteNeverPauseEnforcer:
                     f'.venv_cuda\\Scripts\\activate.bat && python {process_file}'
                 ], shell=True, cwd=os.getcwd())
                 
-                logger.info(f"🔄 FORCE RESTARTED: {name}")
+                logger.info(f"[CYCLE] FORCE RESTARTED: {name}")
         except Exception as e:
-            logger.error(f"❌ Could not restart {name}: {e}")
+            logger.error(f"[ERR] Could not restart {name}: {e}")
 
     def signal_monitor(self):
         """Override system signals that could stop the bot"""
@@ -304,8 +304,8 @@ class AbsoluteNeverPauseEnforcer:
             return
         
         def signal_handler(signum, frame):
-            logger.warning(f"🚫 BLOCKED SIGNAL: {signum}")
-            logger.warning("⚡ ABSOLUTE NEVER PAUSE - SIGNAL IGNORED!")
+            logger.warning(f"? BLOCKED SIGNAL: {signum}")
+            logger.warning("? ABSOLUTE NEVER PAUSE - SIGNAL IGNORED!")
             # Do nothing - signal blocked!
         
         try:
@@ -315,7 +315,7 @@ class AbsoluteNeverPauseEnforcer:
             if hasattr(signal, 'SIGBREAK'):
                 signal.signal(signal.SIGBREAK, signal_handler)  # Ctrl+Break
         except Exception as e:
-            logger.error(f"❌ Signal override error: {e}")
+            logger.error(f"[ERR] Signal override error: {e}")
 
     def force_resume_monitor(self):
         """Force resume trading if ANY pause is detected"""
@@ -340,7 +340,7 @@ class AbsoluteNeverPauseEnforcer:
     def force_immediate_resume(self):
         """Force immediate resume of all trading"""
         
-        logger.warning("🚨 PAUSE DETECTED - FORCING IMMEDIATE RESUME!")
+        logger.warning("? PAUSE DETECTED - FORCING IMMEDIATE RESUME!")
         
         # Create FORCE RESUME signals — filenames deliberately avoid keywords
         # like 'pause', 'stop', 'halt' so emergency_override_monitor won't
@@ -367,9 +367,9 @@ class AbsoluteNeverPauseEnforcer:
                 with open(signal_file, 'w') as f:
                     json.dump(resume_data, f, indent=2)
             except Exception as e:
-                logger.error(f"❌ Could not create resume signal {signal_file}: {e}")
+                logger.error(f"[ERR] Could not create resume signal {signal_file}: {e}")
         
-        logger.warning("✅ FORCE RESUME SIGNALS CREATED")
+        logger.warning("[OK] FORCE RESUME SIGNALS CREATED")
 
     def emergency_override_monitor(self):
         """Emergency override for ANY stop condition"""
@@ -402,7 +402,7 @@ class AbsoluteNeverPauseEnforcer:
                         file_path = os.path.join(root, file)
                         try:
                             os.remove(file_path)
-                            logger.warning(f"🗑️ EMERGENCY REMOVED: {file_path}")
+                            logger.warning(f"?? EMERGENCY REMOVED: {file_path}")
                         except:
                             pass
         except:
@@ -415,7 +415,7 @@ class AbsoluteNeverPauseEnforcer:
             return
         
         def never_stop_handler(signum, frame):
-            logger.warning(f"🚫 SIGNAL {signum} BLOCKED - NEVER PAUSE ACTIVE!")
+            logger.warning(f"? SIGNAL {signum} BLOCKED - NEVER PAUSE ACTIVE!")
             # Signal completely ignored!
         
         # Override ALL possible signals
@@ -428,7 +428,7 @@ class AbsoluteNeverPauseEnforcer:
             if hasattr(signal, sig_name):
                 try:
                     signal.signal(getattr(signal, sig_name), never_stop_handler)
-                    logger.info(f"🛡️ BLOCKED SIGNAL: {sig_name}")
+                    logger.info(f"?? BLOCKED SIGNAL: {sig_name}")
                 except Exception as e:
                     logger.debug(f"Could not override signal {sig_name}: {e}")
 
@@ -455,14 +455,14 @@ class AbsoluteNeverPauseEnforcer:
     def log_absolute_status(self):
         """Log the absolute never-pause status"""
         
-        logger.info("🚫 ABSOLUTE NEVER PAUSE STATUS:")
-        logger.info("   ⚡ OVERRIDE EVERYTHING: ACTIVE")
-        logger.info("   🛡️ ALL SIGNALS BLOCKED: ACTIVE")
-        logger.info("   🗑️ FILE MONITORING: ACTIVE")
-        logger.info("   🔄 PROCESS MONITORING: ACTIVE")
-        logger.info("   ⚙️ SETTINGS OVERRIDE: ACTIVE")
-        logger.info("   🚨 EMERGENCY OVERRIDE: ACTIVE")
-        logger.info("   💪 GUARANTEE: NOTHING CAN STOP THIS BOT!")
+        logger.info("? ABSOLUTE NEVER PAUSE STATUS:")
+        logger.info("   ? OVERRIDE EVERYTHING: ACTIVE")
+        logger.info("   ?? ALL SIGNALS BLOCKED: ACTIVE")
+        logger.info("   ?? FILE MONITORING: ACTIVE")
+        logger.info("   [CYCLE] PROCESS MONITORING: ACTIVE")
+        logger.info("   ?? SETTINGS OVERRIDE: ACTIVE")
+        logger.info("   ? EMERGENCY OVERRIDE: ACTIVE")
+        logger.info("   ? GUARANTEE: NOTHING CAN STOP THIS BOT!")
 
 # Global enforcer instance
 _absolute_enforcer = None
@@ -483,13 +483,13 @@ def get_absolute_status():
     return {'status': 'NOT_ACTIVE'}
 
 if __name__ == "__main__":
-    print("🚫 ACTIVATING ABSOLUTE NEVER PAUSE ENFORCER...")
+    print("? ACTIVATING ABSOLUTE NEVER PAUSE ENFORCER...")
     
     enforcer = activate_absolute_never_pause()
     
-    print("✅ ABSOLUTE NEVER PAUSE ACTIVE!")
-    print("⚡ THE BOT WILL NEVER PAUSE FOR ANY REASON!")
-    print("🛡️ ALL STOP CONDITIONS PERMANENTLY BLOCKED!")
+    print("[OK] ABSOLUTE NEVER PAUSE ACTIVE!")
+    print("? THE BOT WILL NEVER PAUSE FOR ANY REASON!")
+    print("?? ALL STOP CONDITIONS PERMANENTLY BLOCKED!")
     
     # Keep running
     try:
@@ -497,5 +497,5 @@ if __name__ == "__main__":
             enforcer.log_absolute_status()
             time.sleep(30)
     except KeyboardInterrupt:
-        print("🚫 KEYBOARD INTERRUPT BLOCKED - ENFORCER CONTINUES!")
+        print("? KEYBOARD INTERRUPT BLOCKED - ENFORCER CONTINUES!")
         # Even Ctrl+C is blocked!

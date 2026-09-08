@@ -387,7 +387,7 @@ class RLTrainer:
 def train_on_june24():
     """Main training loop on June 24 data — optimised for Profit Factor"""
     print("=" * 70)
-    print("   AEGIS PPO TRAINER — Profit-Factor Optimised (June 24, 2026)")
+    print("   AEGIS PPO TRAINER ? Profit-Factor Optimised (June 24, 2026)")
     print("=" * 70)
 
     os.makedirs(MODELS_DIR, exist_ok=True)
@@ -470,7 +470,7 @@ def train_on_june24():
             best_reward = total_reward
             torch.save(trainer.actor.state_dict(),  RL_MODEL_PATH)
             torch.save(trainer.critic.state_dict(), CRITIC_MODEL_PATH)
-            logger.info(f"  [SAVED] Best model — Implied PF: {implied_pf:.3f} | Reward: {total_reward:.2f}")
+            logger.info(f"  [SAVED] Best model ? Implied PF: {implied_pf:.3f} | Reward: {total_reward:.2f}")
 
     # Final save
     torch.save(trainer.actor.state_dict(),  RL_MODEL_PATH)

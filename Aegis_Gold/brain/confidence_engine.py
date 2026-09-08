@@ -255,11 +255,11 @@ class ConfidenceEngine:
                 summary=summary
             )
             
-            logger.info(f"✅ Confidence: {total_confidence}% ({confidence_level}) | Agreement: {signal_agreement:.2f}")
+            logger.info(f"[OK] Confidence: {total_confidence}% ({confidence_level}) | Agreement: {signal_agreement:.2f}")
             return result
             
         except Exception as e:
-            logger.error(f"❌ Confidence calculation failed: {e}")
+            logger.error(f"[ERR] Confidence calculation failed: {e}")
             return self._create_default_result()
     
     def _check_veto_conditions(self, market_data: Optional[Dict], 

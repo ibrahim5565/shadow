@@ -28,7 +28,7 @@ class AdvancedTelegramController:
         
         # Register all commands
         self.register_commands()
-        logger.info("🚀 Advanced Telegram Controller initialized - NEVER PAUSE MODE")
+        logger.info("? Advanced Telegram Controller initialized - NEVER PAUSE MODE")
 
     def register_commands(self):
         """Register all available commands"""
@@ -54,7 +54,7 @@ class AdvancedTelegramController:
         }
         
         self.command_handlers.update(commands)
-        logger.info(f"✅ Registered {len(commands)} Telegram commands")
+        logger.info(f"[OK] Registered {len(commands)} Telegram commands")
 
     def send_message(self, text, parse_mode="HTML"):
         """Send instant message to Telegram"""
@@ -69,14 +69,14 @@ class AdvancedTelegramController:
             response = requests.post(url, data=data, timeout=5)
             
             if response.status_code == 200:
-                logger.info("📤 Telegram message sent successfully")
+                logger.info("? Telegram message sent successfully")
                 return True
             else:
-                logger.error(f"❌ Telegram send failed: {response.text}")
+                logger.error(f"[ERR] Telegram send failed: {response.text}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Telegram send error: {e}")
+            logger.error(f"[ERR] Telegram send error: {e}")
             return False
 
     def get_updates(self):
@@ -99,7 +99,7 @@ class AdvancedTelegramController:
             return []
             
         except Exception as e:
-            logger.error(f"❌ Telegram get updates error: {e}")
+            logger.error(f"[ERR] Telegram get updates error: {e}")
             return []
 
     def process_updates(self):
@@ -121,7 +121,7 @@ class AdvancedTelegramController:
                     text = message['text'].strip()
                     user = message['from'].get('first_name', 'User')
                     
-                    logger.info(f"📱 Telegram command from {user}: {text}")
+                    logger.info(f"? Telegram command from {user}: {text}")
                     
                     # Process command instantly
                     self.handle_command(text, user)
@@ -144,7 +144,7 @@ class AdvancedTelegramController:
             except Exception as e:
                 error_msg = f"❌ Command error: {str(e)}\n\nUse /help for available commands."
                 self.send_message(error_msg)
-                logger.error(f"❌ Command execution error: {e}")
+                logger.error(f"[ERR] Command execution error: {e}")
         else:
             # Unknown command - suggest help
             help_msg = f"❓ Unknown command: {command}\n\nUse /help to see all available commands."
@@ -255,6 +255,23 @@ class AdvancedTelegramController:
             "📁 C:\\Neural_Networks_Aegis_Gold\n"
             "🌐 Upload ONNX to Netron.app\n"
             "📊 Interactive dashboard ready"
+        )
+
+    def cmd_help(self, text, user):
+        """Show help message with available commands"""
+        return (
+            "🤖 <b>AEGIS GOLD COMMAND MENU</b>\n"
+            "═══════════════════════════════════\n"
+            "📊 /status - Live bot & neural status\n"
+            "🎯 /confidence - AI confidence breakdown\n"
+            "💰 /balance - Current account balance & PnL\n"
+            "📈 /trades - Recent trade performance\n"
+            "🎓 /training - AI model training progress\n"
+            "🧠 /neural - Neural network architecture\n"
+            "🛡️ /risk - Risk management rules & limits\n"
+            "⚡ /resume - Confirm continuous execution\n"
+            "🚨 /emergency - Emergency stop protocol\n"
+            "═══════════════════════════════════"
         )
 
     def cmd_training(self, text, user):
@@ -535,7 +552,7 @@ class AdvancedTelegramController:
             return status_data
             
         except Exception as e:
-            logger.error(f"❌ Error getting system status: {e}")
+            logger.error(f"[ERR] Error getting system status: {e}")
             # Return defaults on error
             return {
                 'bot_status': 'ACTIVE',
@@ -549,7 +566,7 @@ class AdvancedTelegramController:
 
     def start_monitoring(self):
         """Start continuous Telegram monitoring with instant responses"""
-        logger.info("🚀 Starting Telegram monitoring - INSTANT RESPONSE MODE")
+        logger.info("? Starting Telegram monitoring - INSTANT RESPONSE MODE")
         
         while True:
             try:
@@ -557,10 +574,10 @@ class AdvancedTelegramController:
                 time.sleep(self.response_delay)  # 100ms for instant responses
                 
             except KeyboardInterrupt:
-                logger.info("⏹️ Telegram monitoring stopped by user")
+                logger.info("?? Telegram monitoring stopped by user")
                 break
             except Exception as e:
-                logger.error(f"❌ Telegram monitoring error: {e}")
+                logger.error(f"[ERR] Telegram monitoring error: {e}")
                 time.sleep(1)  # Brief pause on error
 
 # Legacy compatibility

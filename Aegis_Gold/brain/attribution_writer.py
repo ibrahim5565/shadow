@@ -73,12 +73,41 @@ def _ensure_schema() -> None:
                 rr_multiple   REAL    DEFAULT NULL,
                 adx           REAL    DEFAULT NULL,
                 rsi           REAL    DEFAULT NULL,
-                spread        REAL    DEFAULT NULL
+                spread        REAL    DEFAULT NULL,
+                historical_edge TEXT  DEFAULT 'neutral',
+                microstructure_quality TEXT DEFAULT 'clean'
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attr_ticket    ON attributions(ticket)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attr_timestamp ON attributions(timestamp)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_attr_outcome   ON attributions(outcome)")
+        
+        # Add all columns dynamically for backward compatibility with existing databases
+        expected_columns = {
+            "ticket": "INTEGER DEFAULT 0",
+            "timestamp": "TEXT DEFAULT ''",
+            "confidence": "REAL DEFAULT 50.0",
+            "regime": "TEXT DEFAULT 'UNKNOWN'",
+            "session": "TEXT DEFAULT 'UNKNOWN'",
+            "signal_source": "TEXT DEFAULT 'SCALP'",
+            "outcome": "TEXT DEFAULT 'BREAKEVEN'",
+            "pnl_usd": "REAL DEFAULT 0.0",
+            "rr_multiple": "REAL DEFAULT NULL",
+            "adx": "REAL DEFAULT NULL",
+            "rsi": "REAL DEFAULT NULL",
+            "spread": "REAL DEFAULT NULL",
+            "historical_edge": "TEXT DEFAULT 'neutral'",
+            "microstructure_quality": "TEXT DEFAULT 'clean'"
+        }
+        cursor = conn.cursor()
+        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(attributions)").fetchall()}
+        for col_name, col_def in expected_columns.items():
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE attributions ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError as ex:
+                    logger.debug("Failed adding column %s: %s", col_name, ex)
+                    
         conn.commit()
     finally:
         conn.close()
@@ -104,28 +133,32 @@ def write_attribution(
     adx: Optional[float] = None,
     rsi: Optional[float] = None,
     spread: Optional[float] = None,
+    historical_edge: str = "neutral",
+    microstructure_quality: str = "clean",
 ) -> bool:
     """
     Write a single trade-close attribution row to attribution.db.
 
     Parameters
     ----------
-    ticket        : MT5 position ticket.
-    confidence    : Stated confidence at signal time (0–100).
-    outcome       : "WIN", "LOSS", or "BREAKEVEN".
-    pnl_usd       : Realised P&L in USD (negative for losses).
-    regime        : Regime label from brain.decide().
-    session       : Session name from FeatureFactory.
-    signal_source : "SCALP" or "SMC".
-    rr_multiple   : Realised R:R (pnl_pts / sl_pts). Pass None if SL unknown.
-    adx           : ADX at signal time. Pass None if unavailable.
-    rsi           : RSI at signal time. Pass None if unavailable.
-    spread        : Spread in points at entry. Pass None if unavailable.
+    ticket                 : MT5 position ticket.
+    confidence             : Stated confidence at signal time (0–100).
+    outcome                : "WIN", "LOSS", or "BREAKEVEN".
+    pnl_usd                : Realised P&L in USD (negative for losses).
+    regime                 : Regime label from brain.decide().
+    session                : Session name from FeatureFactory.
+    signal_source          : "SCALP" or "SMC".
+    rr_multiple            : Realised R:R (pnl_pts / sl_pts). Pass None if SL unknown.
+    adx                    : ADX at signal time. Pass None if unavailable.
+    rsi                    : RSI at signal time. Pass None if unavailable.
+    spread                 : Spread in points at entry. Pass None if unavailable.
+    historical_edge        : LLM analyst verdict edge (positive/negative/neutral).
+    microstructure_quality : LLM analyst verdict microstructure (clean/degraded).
 
     Returns True on success, False on any write error.
     """
     if outcome not in ("WIN", "LOSS", "BREAKEVEN"):
-        logger.warning("[ATTRIBUTION] Invalid outcome '%s' for ticket %s — skipping write", outcome, ticket)
+        logger.warning("[ATTRIBUTION] Invalid outcome '%s' for ticket %s ? skipping write", outcome, ticket)
         return False
 
     try:
@@ -134,8 +167,9 @@ def write_attribution(
             """
             INSERT INTO attributions
                 (ticket, timestamp, confidence, regime, session,
-                 signal_source, outcome, pnl_usd, rr_multiple, adx, rsi, spread)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 signal_source, outcome, pnl_usd, rr_multiple, adx, rsi, spread,
+                 historical_edge, microstructure_quality)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 int(ticket),
@@ -150,13 +184,15 @@ def write_attribution(
                 float(adx)         if adx         is not None else None,
                 float(rsi)         if rsi         is not None else None,
                 float(spread)      if spread       is not None else None,
+                str(historical_edge),
+                str(microstructure_quality)
             )
         )
         conn.commit()
         conn.close()
         logger.debug(
-            "[ATTRIBUTION] Wrote ticket=%s outcome=%s conf=%.0f pnl=%.2f",
-            ticket, outcome, confidence, pnl_usd
+            "[ATTRIBUTION] Wrote ticket=%s outcome=%s conf=%.0f pnl=%.2f edge=%s micro=%s",
+            ticket, outcome, confidence, pnl_usd, historical_edge, microstructure_quality
         )
         return True
     except Exception as exc:

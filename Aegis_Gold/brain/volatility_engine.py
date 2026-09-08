@@ -27,14 +27,8 @@ class VolatilityEngine:
             }
 
         # Standardize rates format
-        try:
-            highs = [c['high'] for c in candles_m5]
-            lows = [c['low'] for c in candles_m5]
-            closes = [c['close'] for c in candles_m5]
-        except TypeError:
-            highs = [c[2] for c in candles_m5]
-            lows = [c[3] for c in candles_m5]
-            closes = [c[4] for c in candles_m5]
+        from brain.candle_utils import parse_hlc
+        highs, lows, closes = parse_hlc(candles_m5)
 
         atr_series = ATR(highs, lows, closes, 14)
         if not atr_series or len(atr_series) < 5:

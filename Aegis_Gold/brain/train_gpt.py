@@ -47,7 +47,7 @@ class TradingDataset(Dataset):
 
 def train():
     print("=" * 55)
-    print("   AEGIS AI BRAIN — SELF-LEARNING TRAINER")
+    print("   AEGIS AI BRAIN ? SELF-LEARNING TRAINER")
     print("=" * 55)
 
     if not os.path.exists(CSV_PATH):
@@ -125,7 +125,7 @@ def train():
     if os.path.exists(MODEL_PATH):
         try:
             model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-            print("Loaded existing model — continuing training...")
+            print("Loaded existing model ? continuing training...")
         except Exception as e:
             print(f"Starting fresh training... (Error loading model: {e})")
 

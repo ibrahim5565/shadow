@@ -12,9 +12,18 @@ Implementing cutting-edge Deep Reinforcement Learning with:
 - Advanced risk-aware reward functions
 """
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    nn = None
+    F = None
+    TORCH_AVAILABLE = False
+
+_nn_module = nn.Module if TORCH_AVAILABLE else object
 import numpy as np
 import random
 from collections import deque, namedtuple
@@ -27,7 +36,7 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-class MultiHeadAttention(nn.Module):
+class MultiHeadAttention(_nn_module):
     """Multi-head self-attention for market pattern recognition"""
     
     def __init__(self, d_model=256, n_heads=8, dropout=0.1):
@@ -63,11 +72,18 @@ class MultiHeadAttention(nn.Module):
         output = self.w_o(context)
         return self.layer_norm(x + self.dropout(output))
 
-class TransformerBlock(nn.Module):
+class TransformerBlock(_nn_module):
     """Transformer block for sequential market data processing"""
     
-    def __init__(self, d_model=256, n_heads=8, d_ff=1024, dropout=0.1):
+    def __init__(self, d_model=256, n_heads=8, d_ff=1024, dropout=0.1, embed_dim=None, num_heads=None):
         super().__init__()
+        if embed_dim is not None:
+            d_model = embed_dim
+        if num_heads is not None:
+            n_heads = num_heads
+        if d_ff is None:
+            d_ff = d_model * 4
+
         self.attention = MultiHeadAttention(d_model, n_heads, dropout)
         self.feed_forward = nn.Sequential(
             nn.Linear(d_model, d_ff),
@@ -86,11 +102,21 @@ class TransformerBlock(nn.Module):
         ff_output = self.feed_forward(attn_output)
         return self.layer_norm(attn_output + self.dropout(ff_output))
 
-class DuelingDQN(nn.Module):
+class DuelingDQN(_nn_module):
     """Advanced Dueling Double DQN with Transformer attention"""
     
-    def __init__(self, input_size=50, hidden_size=512, n_actions=3, n_heads=8, n_layers=6):
+    def __init__(self, input_size=50, hidden_size=512, n_actions=3, n_heads=8, n_layers=6, input_dim=None, output_dim=None, state_dim=None, action_dim=None):
         super().__init__()
+        if input_dim is not None:
+            input_size = input_dim
+        elif state_dim is not None:
+            input_size = state_dim
+            
+        if output_dim is not None:
+            n_actions = output_dim
+        elif action_dim is not None:
+            n_actions = action_dim
+
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_actions = n_actions
@@ -156,11 +182,21 @@ class DuelingDQN(nn.Module):
         
         return q_values
 
-class AdvancedActorCritic(nn.Module):
+class AdvancedActorCritic(_nn_module):
     """Advanced Actor-Critic with attention and meta-learning"""
     
-    def __init__(self, input_size=50, hidden_size=512, n_actions=3, n_heads=8):
+    def __init__(self, input_size=50, hidden_size=512, n_actions=3, n_heads=8, state_dim=None, action_dim=None, input_dim=None, output_dim=None):
         super().__init__()
+        if input_dim is not None:
+            input_size = input_dim
+        elif state_dim is not None:
+            input_size = state_dim
+            
+        if output_dim is not None:
+            n_actions = output_dim
+        elif action_dim is not None:
+            n_actions = action_dim
+
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.n_actions = n_actions
@@ -319,7 +355,7 @@ class AdvancedRLAgent:
     
     def __init__(self, input_size=50, hidden_size=512, n_actions=3, learning_rate=1e-4):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        logger.info(f"🚀 Initializing Advanced RL Agent on {self.device}")
+        logger.info(f"? Initializing Advanced RL Agent on {self.device}")
         
         # Networks
         self.dqn = DuelingDQN(input_size, hidden_size, n_actions).to(self.device)
@@ -530,7 +566,7 @@ class AdvancedRLAgent:
             'epsilon': self.epsilon
         }, f"{path}/advanced_rl_agent.pt")
         
-        logger.info(f"💾 Advanced RL models saved to {path}")
+        logger.info(f"? Advanced RL models saved to {path}")
     
     def load_models(self, path="models/advanced_rl_agent.pt"):
         """Load all models"""
@@ -545,7 +581,7 @@ class AdvancedRLAgent:
             self.training_step = checkpoint['training_step']
             self.epsilon = checkpoint['epsilon']
             
-            logger.info(f"✅ Advanced RL models loaded from {path}")
+            logger.info(f"[OK] Advanced RL models loaded from {path}")
             return True
         return False
     
@@ -576,13 +612,13 @@ def create_advanced_rl_agent():
         learning_rate=1e-4  # Adaptive learning rate
     )
     
-    logger.info("🚀 Created most advanced RL agent with:")
-    logger.info("   • Transformer-based attention mechanisms")
-    logger.info("   • Dueling Double DQN with prioritized replay")
-    logger.info("   • Advanced PPO with entropy regularization")
-    logger.info("   • Meta-learning for rapid adaptation")
-    logger.info("   • Risk-aware decision making")
-    logger.info("   • Multi-head self-attention for market patterns")
+    logger.info("? Created most advanced RL agent with:")
+    logger.info("   ? Transformer-based attention mechanisms")
+    logger.info("   ? Dueling Double DQN with prioritized replay")
+    logger.info("   ? Advanced PPO with entropy regularization")
+    logger.info("   ? Meta-learning for rapid adaptation")
+    logger.info("   ? Risk-aware decision making")
+    logger.info("   ? Multi-head self-attention for market patterns")
     
     return agent
 
@@ -594,7 +630,7 @@ if __name__ == "__main__":
     dummy_state = np.random.randn(50)
     action, info = agent.get_action(dummy_state)
     
-    print(f"✅ Advanced RL Agent Test:")
+    print(f"[OK] Advanced RL Agent Test:")
     print(f"   Action: {action}")
     print(f"   Confidence: {info['confidence']:.3f}")
     print(f"   Risk Estimate: {info['risk_estimate']:.3f}")

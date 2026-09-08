@@ -282,12 +282,12 @@ class DriftMonitor:
             self._state["defensive_forced"] = True
             self._state["retrain_priority"] = True
         elif n_drifting == 1:
-            logger.warning(f"[DRIFT] 1 feature drifting ({drifting}) — monitoring, not acting")
+            logger.warning(f"[DRIFT] 1 feature drifting ({drifting}) ? monitoring, not acting")
             self._state["defensive_forced"] = False
             self._state["retrain_priority"] = False
         else:
             if was_defensive:
-                logger.info("[DRIFT] Distribution normalized — DEFENSIVE override lifted")
+                logger.info("[DRIFT] Distribution normalized ? DEFENSIVE override lifted")
             self._state["defensive_forced"] = False
             self._state["retrain_priority"] = False
 

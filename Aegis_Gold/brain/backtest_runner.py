@@ -131,7 +131,7 @@ def load_trades() -> List[dict]:
                 logger.info("Loaded %d trades from attribution.db", len(trades))
                 return trades
         except Exception as exc:
-            logger.warning("attribution.db read failed (%s) — falling back to journal.csv", exc)
+            logger.warning("attribution.db read failed (%s) ? falling back to journal.csv", exc)
 
     trades = _load_from_journal_csv()
     if trades:
@@ -200,7 +200,7 @@ def run_walk_forward(trades: List[dict], n_splits: int = 5, embargo_pct: float =
 
     for fold_idx, (train_idx, test_idx) in enumerate(splits):
         if len(train_idx) < 10 or len(test_idx) < 5:
-            logger.warning("Fold %d skipped — insufficient samples", fold_idx + 1)
+            logger.warning("Fold %d skipped ? insufficient samples", fold_idx + 1)
             continue
 
         X_train, y_train = X[train_idx], y[train_idx]
@@ -333,7 +333,7 @@ def build_report(trades: List[dict], n_splits: int = 5, n_bootstrap: int = 1000)
 
 def main():
     logger.info("=" * 60)
-    logger.info("AEGIS WALK-FORWARD BACKTEST RUNNER — Module 5")
+    logger.info("AEGIS WALK-FORWARD BACKTEST RUNNER ? Module 5")
     logger.info("=" * 60)
 
     trades = load_trades()

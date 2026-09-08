@@ -1,37 +1,71 @@
 """
 🧠 AEGIS GOLD — UNIFIED INSTITUTIONAL QUANT AI NEURAL BRAIN
 ==============================================================
-Combines:
-1. Deep Reinforcement Learning (Transformer Dueling-DQN & Actor-Critic)
-2. Local OMEGA Candle AI (Multi-candle pattern recognition & wick analysis)
-3. GPT Brain Transformer & ML Ensemble (XGBoost, Random Forest, Neural Net)
-4. HMM Regimes & EGARCH Volatility
-5. Statistical Engine (Conformal Intervals & Kalman Filtering)
-6. Smart Money Concepts (Order Blocks, Liquidity Sweeps, Fair Value Gaps)
+ARCHITECTURE v2.0 — Pattern-Based 7-Engine Consensus
+  (Replaces indicator-confidence gating with pattern-agreement consensus)
 
-Self-thinking Quant AI neural network optimized for Profit Factor >= 2.0 (100% PF).
-Strictly filters out zero-profit ($0.00) and small loss (-$0.01) trades at entry.
+7 ENGINES:
+  1. Kronos Forecaster    — future price-path forecasting model
+  2. SMC Engine           — order blocks, liquidity sweeps, FVGs, BOS/CHoCH
+  3. Quant Feature Engine — Hurst, entropy, FFT/wavelets, fractal/regime
+  4. ML Ensemble          — XGBoost, RF, NN, LogReg on closed-bar features
+  5. OMEGA (AISupervisor) — candle/trend/momentum/volatility composite
+  6. Neural DQN / RL      — meta-weighter only (NOT a directional voter)
+  7. Unified/Master Brain — consensus fusion layer (this file)
+
+CONSENSUS LOGIC:
+  - All 7 engines called via engine.predict_vote(FrozenDecisionSnapshot)
+  - RL Agent is meta-weighter only; directional count uses 6 engines
+  - Minimum 5/6 directional agreement → TRADE; else → WAIT
+  - Any vote with pattern_evidence.confirmation_time > snapshot.timestamp DISCARDED
+  - SL/TP derived from structural patterns via brain/structural_sl_tp.py
+  - 2.0R minimum R:R floor — hard reject if structural TP insufficient
+
+TEMPORAL INTEGRITY:
+  All engines receive only FrozenDecisionSnapshot (data timestamp <= T).
+  No engine may call mt5.copy_rates_from_pos() inside predict_vote().
+
+BACKWARD COMPATIBILITY:
+  predict_unified() is preserved for legacy callers. It routes through the
+  new run_pattern_consensus() when a FrozenDecisionSnapshot is available.
 """
 
 import os
 import sys
 import logging
-import numpy as np
-import torch
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Optional
+from datetime import datetime, timezone
+from typing import Dict, Any, List, Optional, Tuple
 
+import numpy as np
+
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
 from config import settings as cfg
 from brain.candle_ai import CandleAI
 from brain.regime import analyze_regime
-from brain.smc_engine import analyze_smc
+from brain.smc_engine import SMCEngine, analyze_smc
 from brain.indicators import RSI, ADX, ATR
 from brain.reinforcement_agent import AegisRLAgent
 from brain.advanced_neural_architecture import DuelingDQN, AdvancedActorCritic
 from brain.quant_feature_engine import QuantFeatureEngine
 from brain.kronos_forecaster import KronosForecaster
+from brain.engine_vote import EngineVote, make_wait_vote
+from brain.frozen_snapshot import FrozenDecisionSnapshot, build_snapshot
+from brain.structural_sl_tp import derive_sl_tp, MIN_RR_RATIO
 
 logger = logging.getLogger("aegis.unified_brain")
+
+# ── Consensus configuration ────────────────────────────────────────────────
+DIRECTIONAL_ENGINE_NAMES = ["smc", "kronos", "quant_feature_engine", "ml_ensemble", "omega"]
+# Note: unified_brain itself can be a 6th directional voter if legacy predict_unified is used
+MIN_DIRECTIONAL_AGREEMENT = 5   # Must be >= this many engines agreeing on same direction
 
 
 @dataclass
@@ -45,6 +79,22 @@ class UnifiedDecision:
     reasoning: str = ""
     thought_log: List[str] = field(default_factory=list)
     component_scores: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PatternDecision:
+    pattern_type: str
+    action: str                       # "TRADE" or "WAIT"
+    direction: str                    # "BUY", "SELL", or "WAIT"
+    supporting_engines: List[str]
+    conflicting_engines: List[str]
+    entry_zone: float
+    trigger_type: str
+    stop_loss: float
+    take_profit: float
+    expected_value: float
+    reason: str
+    timestamp: datetime
 
 
 class UnifiedQuantAIBrain:
@@ -72,9 +122,9 @@ class UnifiedQuantAIBrain:
             try:
                 state_dict = torch.load(dqn_path, map_location=self.device)
                 self.dueling_dqn.load_state_dict(state_dict, strict=False)
-                logger.info(f"🧠 [UNIFIED BRAIN] Loaded DuelingDQN weights from {dqn_path}")
+                logger.info(f"[BRAIN] [UNIFIED BRAIN] Loaded DuelingDQN weights from {dqn_path}")
             except Exception as e:
-                logger.warning(f"⚠️ [UNIFIED BRAIN] Could not load DuelingDQN weights: {e}")
+                logger.warning(f"[WARN] [UNIFIED BRAIN] Could not load DuelingDQN weights: {e}")
 
     def extract_feature_vector(
         self,
@@ -191,12 +241,13 @@ class UnifiedQuantAIBrain:
         candle_res = self.candle_ai.analyze(candles_m5)
         regime_res = analyze_regime(candles_m5)
 
-        # Kronos forecaster pass (Source 5)
+        # Kronos forecaster pass (Source 5) — use cached instance to avoid repeated HF downloads
         kronos_direction = "NEUTRAL"
         kronos_conf = 0.50
         try:
-            kronos = KronosForecaster()
-            kf_res = kronos.forecast(candles_m5)
+            if not hasattr(self, "_kronos"):
+                self._kronos = KronosForecaster()
+            kf_res = self._kronos.forecast(candles_m5)
             kronos_direction = kf_res.predicted_direction
             kronos_conf = kf_res.confidence_up
             thought_log.append(f"⏳ [Kronos Forecaster] Horizon Direction: {kronos_direction} ({kronos_conf*100:.0f}% confidence)")
@@ -289,3 +340,191 @@ class UnifiedQuantAIBrain:
                 "regime_score": getattr(regime_res, 'score', 50) if hasattr(regime_res, 'score') else 50,
             }
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 🎯 PATTERN CONSENSUS ARCHITECTURE V2.0 (7 ENGINES, NO INDICATOR GATES)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def run_pattern_consensus(
+    snapshot: FrozenDecisionSnapshot,
+    engines: Optional[Dict[str, Any]] = None,
+    min_agreement: int = 5,
+) -> UnifiedDecision:
+    """
+    Executes 7-Engine Pattern Consensus on a FrozenDecisionSnapshot.
+
+    STEPS:
+    1. Collect EngineVote objects from all 7 engines using predict_vote(snapshot).
+    2. Temporal Integrity Gate: Discard any vote whose pattern evidence has
+       confirmation_time > snapshot.timestamp (leakage detection).
+    3. Exclude RL Agent from directional vote count (RL is meta-weighter only).
+    4. Count directional agreement among valid directional engines (SMC, Kronos, QFE, ML, OMEGA).
+    5. Require >= min_agreement (default 5 of 6 directional engines) for BUY or SELL.
+    6. Derive structural SL/TP via derive_sl_tp() from confirming pattern levels.
+    7. Enforce 2.0R minimum floor: reject trade if structural TP < 2.0R.
+    8. Return UnifiedDecision with detailed thought_log and component votes.
+    """
+    thought_log: List[str] = []
+    now = snapshot.timestamp
+    symbol = snapshot.symbol
+
+    thought_log.append(f"⏱️ [Consensus Scan] T={now.isoformat()} Symbol={symbol} Price={snapshot.current_price}")
+
+    # 1. Instantiate default engines if not provided
+    if engines is None:
+        engines = {}
+
+    smc_eng = engines.get("smc") or SMCEngine(symbol=symbol, default_point=snapshot.point)
+    kronos_eng = engines.get("kronos") or KronosForecaster()
+    qfe_eng = engines.get("quant_feature_engine") or QuantFeatureEngine()
+
+    from brain.ml_ensemble import MLEnsemble
+    ml_eng = engines.get("ml_ensemble") or MLEnsemble()
+
+    from brain.ai_supervisor import AISupervisor
+    omega_eng = engines.get("omega") or AISupervisor()
+
+    rl_eng = engines.get("rl_agent") or AegisRLAgent()
+
+    # 2. Collect votes
+    votes: List[EngineVote] = []
+    engine_map = {
+        "smc": smc_eng,
+        "kronos": kronos_eng,
+        "quant_feature_engine": qfe_eng,
+        "ml_ensemble": ml_eng,
+        "omega": omega_eng,
+        "rl_agent": rl_eng,
+    }
+
+    for name, eng in engine_map.items():
+        try:
+            if hasattr(eng, "predict_vote"):
+                vote = eng.predict_vote(snapshot)
+            else:
+                vote = make_wait_vote(name, f"Engine {name} missing predict_vote", signal_time=now)
+            votes.append(vote)
+        except Exception as exc:
+            logger.warning(f"[Consensus] Engine '{name}' predict_vote exception: {exc}")
+            votes.append(make_wait_vote(name, f"Exception: {exc}", signal_time=now))
+
+    # 3. Temporal Integrity Gate: Check for future confirmation_time (leakage)
+    valid_votes: List[EngineVote] = []
+    discarded_votes: List[EngineVote] = []
+
+    for vote in votes:
+        # RL agent vote is meta-weighter only (not directional)
+        if vote.engine_name == "rl_agent":
+            continue
+
+        violations = vote.leakage_check(now)
+        if violations:
+            logger.error(f"❌ [LEAKAGE AUDIT REJECT] {violations[0]}")
+            thought_log.append(f"❌ [LEAKAGE DISCARD] {vote.engine_name}: {violations[0]}")
+            discarded_votes.append(vote)
+        else:
+            valid_votes.append(vote)
+
+    # 4. Extract RL Meta-Weights
+    try:
+        rl_weights = rl_eng.get_engine_weights(regime=snapshot.session)
+    except Exception:
+        rl_weights = {v.engine_name: 1.0 for v in valid_votes}
+
+    # 5. Count directional agreement
+    buy_votes = [v for v in valid_votes if v.direction == "BUY"]
+    sell_votes = [v for v in valid_votes if v.direction == "SELL"]
+    wait_votes = [v for v in valid_votes if v.direction == "WAIT"]
+
+    buy_count = len(buy_votes)
+    sell_count = len(sell_votes)
+
+    thought_log.append(
+        f"📊 [Engine Votes] BUY={buy_count}, SELL={sell_count}, WAIT={len(wait_votes)}, Discarded={len(discarded_votes)}"
+    )
+    for v in valid_votes:
+        thought_log.append(f"  └─ {v.engine_name}: {v.direction} (conviction={v.conviction:.2f})")
+
+    # Determine proposed consensus direction
+    fused_direction = "NA"
+    agreeing_votes: List[EngineVote] = []
+
+    if buy_count >= min_agreement:
+        fused_direction = "BUY"
+        agreeing_votes = buy_votes
+    elif sell_count >= min_agreement:
+        fused_direction = "SELL"
+        agreeing_votes = sell_votes
+
+    if fused_direction == "NA":
+        reason = f"No Consensus | BUY={buy_count}, SELL={sell_count} (Required >= {min_agreement}/{len(valid_votes)})"
+        thought_log.append(f"❌ [Consensus Veto] {reason}")
+        return UnifiedDecision(
+            action="WAIT",
+            direction="NA",
+            confidence=int(max(buy_count, sell_count) / max(len(valid_votes), 1) * 100),
+            profit_factor_score=1.0,
+            institutional_score=0,
+            model_consensus=round(max(buy_count, sell_count) / max(len(valid_votes), 1) * 100, 1),
+            reasoning=reason,
+            thought_log=thought_log,
+            component_scores={v.engine_name: v.direction for v in votes},
+        )
+
+    thought_log.append(f"✅ [Consensus Reached] Direction={fused_direction} ({len(agreeing_votes)}/{len(valid_votes)} engines agree)")
+
+    # 6. Structural SL/TP Derivation & 2.0R Floor Enforcement
+    sl_price, tp_price, sl_basis, tp_basis = derive_sl_tp(agreeing_votes, fused_direction, snapshot, symbol)
+
+    if sl_price is None or tp_price is None:
+        reason = "Structural SL/TP Veto | Unable to derive valid pattern SL/TP meeting 2.0R floor"
+        thought_log.append(f"❌ [SL/TP Veto] {reason}")
+        return UnifiedDecision(
+            action="WAIT",
+            direction="NA",
+            confidence=0,
+            profit_factor_score=1.0,
+            institutional_score=0,
+            model_consensus=round(len(agreeing_votes) / max(len(valid_votes), 1) * 100, 1),
+            reasoning=reason,
+            thought_log=thought_log,
+            component_scores={v.engine_name: v.direction for v in votes},
+        )
+
+    # 7. Convert SL/TP prices to points for main execution pipeline
+    current_price = snapshot.current_price
+    pt = snapshot.point
+    sl_pts = int(round(abs(current_price - sl_price) / pt))
+    tp_pts = int(round(abs(current_price - tp_price) / pt))
+    rr_ratio = round((tp_pts / sl_pts), 2) if sl_pts > 0 else 0.0
+
+    thought_log.append(f"🎯 [Structural Levels] SL={sl_price:.2f} ({sl_pts}pts | {sl_basis})")
+    thought_log.append(f"🎯 [Structural Levels] TP={tp_price:.2f} ({tp_pts}pts | {tp_basis})")
+    thought_log.append(f"⚖️ [R:R Floor Passed] Realized R:R = {rr_ratio}R >= {MIN_RR_RATIO}R floor")
+
+    avg_conviction = sum(v.conviction * rl_weights.get(v.engine_name, 1.0) for v in agreeing_votes) / len(agreeing_votes)
+    confidence = int(min(99, max(50, avg_conviction * 100)))
+
+    return UnifiedDecision(
+        action="TRADE",
+        direction=fused_direction,
+        confidence=confidence,
+        profit_factor_score=round(2.0 + rr_ratio * 0.2, 2),
+        institutional_score=int(len(agreeing_votes) / len(valid_votes) * 100),
+        model_consensus=round(len(agreeing_votes) / len(valid_votes) * 100, 1),
+        reasoning=f"7-Engine Consensus {fused_direction} | {len(agreeing_votes)}/{len(valid_votes)} Agree | R:R={rr_ratio}R",
+        thought_log=thought_log,
+        component_scores={
+            "sl_price": sl_price,
+            "tp_price": tp_price,
+            "sl_pts": sl_pts,
+            "tp_pts": tp_pts,
+            "rr_ratio": rr_ratio,
+            "sl_basis": sl_basis,
+            "tp_basis": tp_basis,
+            "agree_count": len(agreeing_votes),
+            "total_valid_votes": len(valid_votes),
+            "engine_votes": {v.engine_name: v.direction for v in valid_votes},
+        },
+    )

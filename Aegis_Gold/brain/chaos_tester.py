@@ -17,7 +17,7 @@ class ChaosTester:
         self.gateway = gateway
         # Absolute safety check
         assert cfg.DEMO_MODE, "CRITICAL ERROR: ChaosTester CANNOT run on a LIVE account!"
-        logger.warning("💥 AEGIS CHAOS FAULT-INJECTION ENVIRONMENT ACTIVE (DEMO ONLY) 💥")
+        logger.warning("? AEGIS CHAOS FAULT-INJECTION ENVIRONMENT ACTIVE (DEMO ONLY) ?")
 
     def inject_broker_disconnect(self, duration_sec: int = 15):
         """Simulates loss of connection to broker."""

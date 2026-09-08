@@ -59,12 +59,12 @@ SYMBOLS_CONFIG = {
         "base_lot_demo": 0.01,          # DEMO: 0.01 lot
         "base_lot_live": 0.01,          # LIVE: 0.01 lot
         "max_lot": 0.01,                # Hard cap per trade
-        "target_profit": 10.00,         # FIRST 200 MODE: $10 minimum profit for Gold (was $0.30)
-        "min_tp_points": 0,             # NO TP ON ORDER - Dynamic only
-        "max_tp_points": 0,             # NO TP ON ORDER - Dynamic only
+        "target_profit": 3.90,          # DAY TRADE MOVE: $3.90 target profit per 0.01 lot ($3.90 Gold move)
+        "min_tp_points": 390,           # DAY TRADE TARGET: 390 points ($3.90 Gold price move)
+        "max_tp_points": 600,           # Max TP points
         "min_sl_points": 150,           # Mandatory Hard SL Floor ($1.50 Gold move)
         "max_sl_points": 400,           # Max SL points
-        "spread_limits": {"ASIAN": 35, "LONDON": 30, "NY": 35, "OVERLAP": 40},  # RELAXED: Allow wider Gold spreads
+        "spread_limits": {"ASIAN": 60, "LONDON": 55, "NY": 60, "OVERLAP": 65},  # Sniper Mode: Wider limits — high-conviction setups only
         "breakeven_trigger_pts": 15,    # Move to BE at 15pts (guarantees real move before locking profit)
         "trail_trigger_pts": 15,        # Start trailing at 15pts for Gold
         "trail_distance_pts": 8,        # Wider trailing distance for Gold volatility
@@ -92,7 +92,9 @@ BASE_LOT_LIVE = 0.10
 MAX_LOT       = 0.50
 RISK_PERCENT  = 0.01   # 1% max risk per trade
 
-# ── BRAIN THRESHOLDS (80% CONFIDENCE - USER PRIORITY) ──────────────────────────
+# ── BRAIN THRESHOLDS (PATTERN QUALITY FOCUS) ──────────────────────────
+# Note: MIN_PATTERN_QUALITY is transitional - being replaced with multi-factor
+# pattern quality evaluation (structure + historical edge + EV + engines)
 MIN_REGIME_SCORE    = 5
 MIN_STRUCTURE_SCORE = 5
 MIN_ENTRY_SCORE     = 5
@@ -100,7 +102,13 @@ MIN_TOTAL_SCORE     = 10
 MIN_ADX             = 5
 MIN_RR_RATIO        = 0.5
 ZONE_THRESHOLD_PTS  = 30
-SCALP_CONFIDENCE_THRESHOLD = 50  # 50% confidence threshold — shows 50% on dashboard, trades at ≥50%
+MIN_PATTERN_QUALITY = 50  # Transitional - use pattern_quality.py evaluation instead
+
+# Pattern Quality Evaluation (replaces confidence gates)
+PATTERN_QUALITY_THRESHOLD = 0.55  # Composite quality score (0.0-1.0)
+REQUIRE_POSITIVE_EV = True        # Trade only if EV > 0 after costs
+REQUIRE_HISTORICAL_EDGE = True    # Trade only if pattern memory shows edge
+MIN_REMAINING_MOVE_PCT = 0.50     # Require 50%+ of expected move remaining
 
 # ── ABSOLUTE NEVER PAUSE SETTINGS (STRONGEST POSSIBLE) ────────────────────────
 ABSOLUTE_NEVER_PAUSE       = True   # STRONGEST NEVER PAUSE MODE
@@ -145,10 +153,10 @@ ML_MIN_TRAINING_DATA = 20  # Start training after 20 trades (reduced from 100)
 ML_USE_GPU = True  # Enable GPU acceleration for training
 ML_BATCH_SIZE = 32  # Batch size for GPU training
 
-# Confidence Engine
-MIN_CONFIDENCE_THRESHOLD = 50  # 50% confidence threshold — display 50%, trade at ≥50%
-CONFIDENCE_VETO_ENABLED = False  # Disable vetos - take all trades
-CONFIDENCE_THRESHOLD_LOCKED = True  # Prevent self-optimizer from lowering this
+# Confidence Engine (informational/diagnostic only - not a trade gate)
+MIN_CONFIDENCE_THRESHOLD = 50  # Display threshold for dashboard
+CONFIDENCE_VETO_ENABLED = False  # Disabled - use pattern quality gates instead
+CONFIDENCE_THRESHOLD_LOCKED = True  # Prevent self-optimizer from changing this
 
 # Self-Optimization
 SELF_OPTIMIZATION_ENABLED = True  # Enable continuous learning
@@ -191,11 +199,12 @@ ALL_PAUSES_BLOCKED            = True    # ALL PAUSES PERMANENTLY BLOCKED
 
 SESSION_REFRESH_MIN           = 45      # Session refresh interval in minutes
 
-# ── AI TRADING RULES (SCALP PRIMARY - USER PRIORITY) ──────────────────────────
+# ── AI TRADING RULES (PATTERN-FIRST ARCHITECTURE) ──────────────────────────
+# Note: "SMALL_PATTERN" = short-horizon patterns (5-15 min), not HFT/scalping
 RR_RATIO              = 3.0    # Minimum 1:3 R:R for SMC trades
 ATR_SL_MULTIPLIER     = 1.2    # Wider SL for Gold volatility
 NEWS_BLACKOUT_MINUTES = 15     # 15-min blackout around high-impact news
-SCALP_MODE_CONTROL    = "scalp"  # PRIMARY: SCALP engine (user priority) | SECONDARY: SMC
+PATTERN_MODE          = "small_pattern"  # PRIMARY: Pattern detection | Options: "small_pattern", "smc", "unified"
 BASE_RISK_PCT         = 0.005  # 0.5% risk per trade
 MAX_RISK_PCT          = 0.01   # 1% max risk
 MIN_GAP_BETWEEN_TRADES_MIN = 0  # No gap — take every opportunity
@@ -251,11 +260,11 @@ TRAIL_DISTANCE_PTS    = 10    # Wider trailing for Gold volatility
 TIME_STOP_BASE_SEC    = 180   # Give Gold trades 3 minutes
 MAX_VOLATILITY_RATIO  = 5.0   # High volatility tolerance for Gold
 
-# ── SCALP INSTANT-CLOSE PROTECTION (MINIMUM PROFIT REQUIRED) ──────────
+# ── PATTERN INSTANT-CLOSE PROTECTION (MINIMUM PROFIT REQUIRED) ──────────
 # IMPORTANT: Don't close at $0.00 - require actual profit
-SCALP_MIN_PROFIT_USD  = 1.00   # Minimum $1.00 profit to close (strictly prevents $0.00 / -$0.01 closes)
+PATTERN_MIN_PROFIT_USD  = 1.00   # Minimum $1.00 profit to close (prevents $0.00 closes)
 # Close immediately if loss exceeds this threshold (USD) — over-loss protection
-SCALP_MAX_LOSS_USD    = 5.00   # Maximum $5 loss allowed per trade
+PATTERN_MAX_LOSS_USD    = 5.00   # Maximum $5 loss allowed per trade
 
 # ── SPREAD LIMITS (RELAXED - trade through volatility) ────
 SPREAD_LIMITS = {"ASIAN": 40, "LONDON": 40, "NY": 40, "OVERLAP": 40}  # RELAXED: Allow trades up to 40pt spread
@@ -326,3 +335,20 @@ KELLY_FRACTION      = float(os.environ.get("KELLY_FRACTION",      "0.25"))  # 25
 KELLY_MAX_RISK_PCT  = float(os.environ.get("KELLY_MAX_RISK_PCT",  "0.02"))  # 2% hard equity cap
 KELLY_ROLLING_N     = int(os.environ.get(  "KELLY_ROLLING_N",    "100"))   # rolling window trades
 KELLY_PRIOR_WEIGHT  = int(os.environ.get(  "KELLY_PRIOR_WEIGHT", "100"))   # Bayesian prior weight
+
+
+# ── SNIPER MODE (Phase 4 — High-Precision Pattern-Only Trading) ──────────────
+# Enables Triple-Lock Confirmation gate. When active, only SMALL_PATTERN and
+# BIG_PATTERN tier setups that pass all 3 locks can generate TRADE decisions.
+# Small-pattern mode is disabled when SNIPER_MODE_ENABLED = True.
+SNIPER_MODE_ENABLED       = True    # Master switch for Sniper gating
+ALLOW_SMALL_PATTERNS      = False   # Small pattern tier disabled in sniper mode
+SNIPER_ML_CONF_MIN        = 0.85    # ML directional win probability floor (was 0.68)
+SNIPER_SMC_CONF_MIN       = 0.80    # SMC OB+FVG structural confidence floor
+SNIPER_HTF_CONF_MIN       = 0.80    # H1 HTF alignment confidence floor
+SNIPER_ATR_RATIO_MAX      = 2.5     # Max ATR ratio vs 20-bar baseline (news spike guard)
+SNIPER_REQUIRE_LIQ_SWEEP  = True    # Big Pattern requires prior HTF liquidity sweep (PO3)
+SNIPER_AUTO_TIGHTEN       = True    # Auto-tighten ml_conf if WR < 95% over last 50 trades
+SNIPER_AUTO_TIGHTEN_STEP  = 0.02    # Tighten ml_conf by 2% each auto-tighten cycle
+SNIPER_RISK_PCT           = 0.005   # 0.5% equity risk per sniper trade (ultra-conservative)
+SNIPER_MIN_RR             = 2.5     # Minimum R:R ratio for sniper setups (TP/SL)

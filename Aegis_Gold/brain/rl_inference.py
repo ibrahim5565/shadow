@@ -57,7 +57,7 @@ class RLInference:
             self.actor.load_state_dict(torch.load(RL_MODEL_PATH, map_location=self.device))
             self.actor.eval()
             self.enabled = True
-            logger.info(f"✅ RL Actor model loaded successfully from {RL_MODEL_PATH}")
+            logger.info(f"[OK] RL Actor model loaded successfully from {RL_MODEL_PATH}")
         except Exception as e:
             logger.error(f"Failed to load RL model: {e}")
             self.enabled = False

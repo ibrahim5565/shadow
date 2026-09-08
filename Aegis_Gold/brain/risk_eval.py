@@ -33,8 +33,14 @@ def evaluate_risk(account: dict, structure, candles, risk_mgr, session: str, spr
     #     return RiskState(False, "R:R not sufficient.", 0)
         
     # Check 4: Consecutive Loss Check
-    if risk_mgr.consecutive_losses >= cfg.MAX_CONSECUTIVE_LOSSES:
-        return RiskState(False, f"{cfg.MAX_CONSECUTIVE_LOSSES} consecutive losses. Pause active.", 0)
+    if risk_mgr is not None and hasattr(risk_mgr, 'consecutive_losses'):
+        try:
+            cl = getattr(risk_mgr, 'consecutive_losses')
+            if isinstance(cl, (int, float)) and cl >= cfg.MAX_CONSECUTIVE_LOSSES:
+                return RiskState(False, f"{cfg.MAX_CONSECUTIVE_LOSSES} consecutive losses. Pause active.", 0)
+        except Exception:
+            pass
+    # risk_mgr=None → shadow mode / lazy-bound → treat as cleared (no trade history)
     
     # Daily Loss Check: DISABLED (per user request - unlimited daily loss allowed)
         

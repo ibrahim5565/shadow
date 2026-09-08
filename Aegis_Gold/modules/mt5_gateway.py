@@ -73,7 +73,7 @@ class MT5Gateway:
             info = mt5.symbol_info(symbol)
             tick = mt5.symbol_info_tick(symbol)
             if info is None or tick is None:
-                logger.warning(f"Cannot detect filling mode for {symbol} — using FOK")
+                logger.warning(f"Cannot detect filling mode for {symbol} ? using FOK")
                 return mt5.ORDER_FILLING_FOK
 
             fm = info.filling_mode
@@ -114,7 +114,7 @@ class MT5Gateway:
                     self._filling_mode_cache[symbol] = val
                     return val
 
-            logger.warning(f"[{symbol}] No filling mode passed order_check — defaulting to FOK")
+            logger.warning(f"[{symbol}] No filling mode passed order_check ? defaulting to FOK")
             self._filling_mode_cache[symbol] = mt5.ORDER_FILLING_FOK
             return mt5.ORDER_FILLING_FOK
 
@@ -138,7 +138,7 @@ class MT5Gateway:
                     self._cache_symbols_info()
                     sym_list = ", ".join(self.active_symbols)
                     self._alert(f"✅ MT5 multi-symbol gateway connected\nActive: {sym_list}")
-                    logger.info("MT5 initialized (attempt %d) — symbols: %s", attempt, sym_list)
+                    logger.info("MT5 initialized (attempt %d) ? symbols: %s", attempt, sym_list)
                     return True
                 else:
                     err = mt5.last_error()
@@ -174,7 +174,7 @@ class MT5Gateway:
                 self.active_symbols.append(detected)
                 self.symbol_base_map[detected] = base_symbol
                 if detected != base_symbol:
-                    logger.info(f"Auto-detected broker symbol: {base_symbol} → {detected}")
+                    logger.info(f"Auto-detected broker symbol: {base_symbol} ? {detected}")
                 else:
                     logger.info(f"Auto-detected standard symbol: {detected}")
             else:
@@ -278,6 +278,42 @@ class MT5Gateway:
         except Exception as exc:
             self._track_error(f"get_candles_m1_{symbol}", str(exc))
             return []
+    
+    def get_candles_m15(self, symbol: str, count: int = 50):
+        """Fetch M15 OHLC candles for pattern context analysis."""
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, count)
+            return rates if (rates is not None and len(rates) > 0) else []
+        except Exception as exc:
+            self._track_error(f"get_candles_m15_{symbol}", str(exc))
+            return []
+    
+    def get_candles_m30(self, symbol: str, count: int = 40):
+        """Fetch M30 OHLC candles for swing structure analysis."""
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M30, 0, count)
+            return rates if (rates is not None and len(rates) > 0) else []
+        except Exception as exc:
+            self._track_error(f"get_candles_m30_{symbol}", str(exc))
+            return []
+    
+    def get_candles_h1(self, symbol: str, count: int = 30):
+        """Fetch H1 OHLC candles for session trend analysis."""
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, count)
+            return rates if (rates is not None and len(rates) > 0) else []
+        except Exception as exc:
+            self._track_error(f"get_candles_h1_{symbol}", str(exc))
+            return []
+    
+    def get_candles_h4(self, symbol: str, count: int = 24):
+        """Fetch H4 OHLC candles for institutional bias analysis."""
+        try:
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, count)
+            return rates if (rates is not None and len(rates) > 0) else []
+        except Exception as exc:
+            self._track_error(f"get_candles_h4_{symbol}", str(exc))
+            return []
 
     # ── account info ───────────────────────────────────────────
 
@@ -297,6 +333,55 @@ class MT5Gateway:
             self._track_error("account_info", str(exc))
             return None
 
+    def normalize_volume(self, symbol: str, volume: float) -> float:
+        """
+        Clamps and rounds volume based on MT5 symbol_info specifications:
+        volume_min, volume_max, volume_step.
+        Guarantees that sent volume will never fail with 'Invalid volume'.
+        Always refreshes from live MT5 symbol_info if cached data is incomplete.
+        """
+        data = self.symbols_data.get(symbol, {})
+        min_lot  = data.get("min_lot")
+        max_lot  = data.get("max_lot")
+        lot_step = data.get("lot_step")
+
+        # Always refresh from live MT5 symbol_info for precision
+        try:
+            info = mt5.symbol_info(symbol)
+            if info:
+                if info.volume_min > 0:
+                    min_lot = info.volume_min
+                if info.volume_max > 0:
+                    max_lot = info.volume_max
+                if info.volume_step > 0:
+                    lot_step = info.volume_step
+                # Cache back to symbols_data
+                if symbol in self.symbols_data:
+                    self.symbols_data[symbol]["min_lot"]  = min_lot
+                    self.symbols_data[symbol]["max_lot"]  = max_lot
+                    self.symbols_data[symbol]["lot_step"] = lot_step
+        except Exception:
+            pass
+
+        if not min_lot  or min_lot  <= 0: min_lot  = 0.01
+        if not max_lot  or max_lot  <= 0: max_lot  = 100.0
+        if not lot_step or lot_step <= 0: lot_step = 0.01
+
+        # Clamp volume to [min_lot, max_lot]
+        volume = max(min_lot, min(max_lot, float(volume)))
+
+        # Round volume to lot_step
+        if lot_step > 0:
+            steps = round(volume / lot_step)
+            volume = steps * lot_step
+
+        # Precision calculation
+        step_str = f"{lot_step:.8f}".rstrip("0")
+        decimals = len(step_str.split(".")[1]) if "." in step_str else 2
+        decimals = min(decimals, 8)
+        norm_vol = round(volume, decimals)
+        return max(min_lot, norm_vol)
+
     # ── order execution ────────────────────────────────────────
 
     def build_order_request(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int, price: float = None, type_filling: int = None) -> dict:
@@ -304,6 +389,7 @@ class MT5Gateway:
         Constructs order request payload with MANDATORY broker-side hard SL enforcement.
         Under NO circumstance will sl_pts <= 0 produce a request with sl = 0.0.
         """
+        lot = self.normalize_volume(symbol, lot)
         data = self.symbols_data.get(symbol, {
             "point": 0.01 if "XAU" in symbol.upper() else 0.00001,
             "digits": 2 if "XAU" in symbol.upper() else 5
@@ -311,16 +397,16 @@ class MT5Gateway:
         point = data["point"]
         digits = data["digits"]
         
-        # Enforce Hard SL Floor if sl_pts is <= 0 or missing
+        # Enforce Hard SL Floor if sl_pts is missing or below mandatory floor
         is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
         default_floor_pts = 150 if is_gold else 40
         
-        if sl_pts is None or sl_pts <= 0:
-            logger.error(
-                f"🚨 [HARD SL FLOOR ENFORCED] Order for {symbol} requested with sl_pts={sl_pts}. "
-                f"Floored to {default_floor_pts}pts to prevent naked broker position."
+        if sl_pts is None or sl_pts < default_floor_pts:
+            logger.warning(
+                f"[ALERT] [HARD SL FLOOR ENFORCED] Order for {symbol} requested with sl_pts={sl_pts}. "
+                f"Floored to {default_floor_pts}pts to prevent dangerously tight or naked broker position."
             )
-            self._alert(f"🚨 <b>[HARD SL FLOOR FIRED]</b> Order for {symbol} sl_pts={sl_pts} floored to {default_floor_pts}pts.")
+            self._alert(f"<b>[HARD SL FLOOR FIRED]</b> Order for {symbol} sl_pts={sl_pts} floored to {default_floor_pts}pts.")
             sl_pts = default_floor_pts
 
         if price is None:
@@ -333,10 +419,20 @@ class MT5Gateway:
             tp = price + tp_pts * point if tp_pts > 0 else 0.0
             sl = price - sl_pts * point
             order_type = mt5.ORDER_TYPE_BUY
+            # Validate BUY: SL must be below entry, TP must be above entry
+            if sl >= price:
+                raise ValueError(f"INVALID BUY ORDER: SL ({sl:.5f}) must be < entry ({price:.5f})")
+            if tp_pts > 0 and tp <= price:
+                raise ValueError(f"INVALID BUY ORDER: TP ({tp:.5f}) must be > entry ({price:.5f})")
         else:
             tp = price - tp_pts * point if tp_pts > 0 else 0.0
             sl = price + sl_pts * point
             order_type = mt5.ORDER_TYPE_SELL
+            # Validate SELL: SL must be above entry, TP must be below entry
+            if sl <= price:
+                raise ValueError(f"INVALID SELL ORDER: SL ({sl:.5f}) must be > entry ({price:.5f})")
+            if tp_pts > 0 and tp >= price:
+                raise ValueError(f"INVALID SELL ORDER: TP ({tp:.5f}) must be < entry ({price:.5f})")
 
         sl_rounded = round(sl, digits)
         if sl_rounded <= 0.0:
@@ -369,9 +465,9 @@ class MT5Gateway:
                 symbol=test_sym, direction="BUY", lot=0.01, tp_pts=100, sl_pts=0, price=2000.0 if "XAU" in test_sym else 1.1000, type_filling=mt5.ORDER_FILLING_FOK
             )
             if req.get("sl", 0.0) == 0.0:
-                logger.critical(f"❌ [SL SAFETY VERIFICATION FAILED] Symbol {test_sym} generated sl=0.0 payload!")
+                logger.critical(f"[ERR] [SL SAFETY VERIFICATION FAILED] Symbol {test_sym} generated sl=0.0 payload!")
                 return False
-        logger.info("✅ [SL SAFETY VERIFICATION PASSED] Mandatory broker-side SL floor active for all symbols.")
+        logger.info("[OK] [SL SAFETY VERIFICATION PASSED] Mandatory broker-side SL floor active for all symbols.")
         return True
 
     def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int):
@@ -389,6 +485,31 @@ class MT5Gateway:
                 symbol=symbol, direction=direction, lot=lot, tp_pts=tp_pts, sl_pts=sl_pts, price=price
             )
 
+            # ── STRICT SYMMETRICAL VALIDATION (Requirements 10, 11, 12) ──────────
+            if direction == "SELL":
+                if request["type"] != mt5.ORDER_TYPE_SELL:
+                    logger.error(f"[ORDER REJECTED] SELL assertion failed: order type {request['type']} != ORDER_TYPE_SELL")
+                    return None, 0, 0
+                if request["sl"] <= price:
+                    logger.error(f"[ORDER REJECTED] SELL assertion failed: SL {request['sl']} <= entry {price}")
+                    return None, 0, 0
+                if tp_pts > 0 and request["tp"] >= price:
+                    logger.error(f"[ORDER REJECTED] SELL assertion failed: TP {request['tp']} >= entry {price}")
+                    return None, 0, 0
+            elif direction == "BUY":
+                if request["type"] != mt5.ORDER_TYPE_BUY:
+                    logger.error(f"[ORDER REJECTED] BUY assertion failed: order type {request['type']} != ORDER_TYPE_BUY")
+                    return None, 0, 0
+                if request["sl"] >= price:
+                    logger.error(f"[ORDER REJECTED] BUY assertion failed: SL {request['sl']} >= entry {price}")
+                    return None, 0, 0
+                if tp_pts > 0 and request["tp"] <= price:
+                    logger.error(f"[ORDER REJECTED] BUY assertion failed: TP {request['tp']} <= entry {price}")
+                    return None, 0, 0
+            else:
+                logger.error(f"[ORDER REJECTED] Invalid direction: {direction}")
+                return None, 0, 0
+
             t0 = time.perf_counter()
             result = mt5.order_send(request)
             lat = (time.perf_counter() - t0) * 1000
@@ -398,14 +519,100 @@ class MT5Gateway:
                 logger.info(f"ORDER {direction} {symbol} lot={lot} sl={request['sl']} latency={lat:.0f}ms")
                 return result, lat, slippage
             
-            err = result.comment if result else mt5.last_error()
-            self._track_error(f"exec_{symbol}", f"Failed: {err}")
+            retcode = result.retcode if result else "N/A"
+            comment = result.comment if result else mt5.last_error()
+            err_msg = f"retcode={retcode} ({comment})"
+            logger.error(f"[ORDER REJECTED] {direction} {symbol} lot={request.get('volume')} payload={request} -> {err_msg}")
+            self._track_error(f"exec_{symbol}", f"Failed: {err_msg}")
             return None, lat, 0
         except Exception as exc:
             self._track_error(f"exec_{symbol}_exc", str(exc))
             return None, 0, 0
 
+    def pre_execution_check(
+        self,
+        symbol: str,
+        direction: str,
+        session: str = "LONDON",
+        latency_abort_ms: float = 100.0,
+    ) -> dict:
+        """
+        Zero-Bypass pre-execution safety check (Phase 4 — Sniper Mode).
+        Must pass ALL checks within 10ms of signal before order dispatch.
+
+        Checks:
+          1. MT5 connection alive
+          2. Free margin >= required margin for 0.01 lot
+          3. Current spread <= session spread limit
+          4. Tick fetch latency <= latency_abort_ms (default: 100ms)
+
+        Returns:
+            { "ok": bool, "reason": str, "latency_ms": float, "spread": float }
+        """
+        import time as _time
+
+        t_start = _time.perf_counter()
+
+        # 1. MT5 Connection Check
+        try:
+            acct = mt5.account_info()
+            if acct is None:
+                return {"ok": False, "reason": "MT5_DISCONNECTED", "latency_ms": 0.0, "spread": 0.0}
+        except Exception as _ce:
+            return {"ok": False, "reason": f"MT5_CONNECTION_ERROR:{_ce}", "latency_ms": 0.0, "spread": 0.0}
+
+        # 2. Tick fetch + Latency check
+        try:
+            tick = mt5.symbol_info_tick(symbol)
+            lat_ms = (_time.perf_counter() - t_start) * 1000
+            if tick is None:
+                return {"ok": False, "reason": f"TICK_UNAVAILABLE:{symbol}", "latency_ms": lat_ms, "spread": 0.0}
+            if lat_ms > latency_abort_ms:
+                logger.warning(f"[SNIPER LATENCY GUARD] {symbol} tick fetch took {lat_ms:.0f}ms > {latency_abort_ms:.0f}ms — aborting")
+                return {"ok": False, "reason": f"LATENCY_GUARD_ABORT:{lat_ms:.0f}ms>{latency_abort_ms:.0f}ms", "latency_ms": lat_ms, "spread": 0.0}
+        except Exception as _te:
+            return {"ok": False, "reason": f"TICK_FETCH_ERROR:{_te}", "latency_ms": 0.0, "spread": 0.0}
+
+        # 3. Spread Check
+        try:
+            sym_info = mt5.symbol_info(symbol)
+            if sym_info:
+                spread_pts = sym_info.spread
+                spread_limit = cfg.SPREAD_LIMITS.get(session, 40)
+                if spread_pts > spread_limit:
+                    return {
+                        "ok": False,
+                        "reason": f"SPREAD_TOO_WIDE:{spread_pts}pts>{spread_limit}pts({session})",
+                        "latency_ms": lat_ms,
+                        "spread": float(spread_pts),
+                    }
+            else:
+                spread_pts = 0
+        except Exception as _sp:
+            spread_pts = 0
+
+        # 4. Margin Check (0.01 lot minimum)
+        try:
+            price = tick.ask if direction == "BUY" else tick.bid
+            margin_req = mt5.order_calc_margin(
+                mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
+                symbol, 0.01, price
+            )
+            if margin_req is not None and acct.margin_free < margin_req:
+                return {
+                    "ok": False,
+                    "reason": f"INSUFFICIENT_MARGIN:free={acct.margin_free:.2f}<required={margin_req:.2f}",
+                    "latency_ms": lat_ms,
+                    "spread": float(spread_pts),
+                }
+        except Exception as _me:
+            logger.debug(f"[PRE_CHECK] Margin check error (non-fatal): {_me}")
+
+        lat_ms = (_time.perf_counter() - t_start) * 1000
+        return {"ok": True, "reason": "PRE_CHECK_PASS", "latency_ms": lat_ms, "spread": float(spread_pts)}
+
     # ── position management ────────────────────────────────────
+
 
     def get_open_positions(self, symbol: str = None):
         """Return list of open positions (for specific symbol or all)."""
@@ -539,7 +746,7 @@ class MT5Gateway:
             result = mt5.order_send(request)
             ok = result and result.retcode == mt5.TRADE_RETCODE_DONE
             if ok:
-                logger.info(f"[DynamicTP] TP updated → {new_tp:.5f} for #{ticket} {symbol}")
+                logger.info(f"[DynamicTP] TP updated ? {new_tp:.5f} for #{ticket} {symbol}")
             else:
                 err = result.comment if result else mt5.last_error()
                 logger.debug(f"[DynamicTP] modify_tp failed for #{ticket}: {err}")

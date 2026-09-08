@@ -166,6 +166,54 @@ def find_bot_process(bot_pid):
 
 
 
+def _flatten_all_positions_emergency():
+    """Emergency flatten: connects to MT5 and closes all open positions on XAUUSD/EURUSD."""
+    logger.critical("[WATCHDOG] Emergency flatten sequence triggered!")
+    try:
+        import MetaTrader5 as mt5
+        if not mt5.initialize():
+            logger.error("[WATCHDOG] MT5 initialization failed for emergency flatten")
+            return
+        
+        positions = mt5.positions_get()
+        if positions:
+            for pos in positions:
+                ticket = pos.ticket
+                symbol = pos.symbol
+                lot = pos.volume
+                # mt5.POSITION_TYPE_BUY = 0, mt5.POSITION_TYPE_SELL = 1
+                order_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
+                
+                # Fetch current tick for pricing
+                tick = mt5.symbol_info_tick(symbol)
+                if tick is None:
+                    logger.error(f"[WATCHDOG] Failed to get tick for {symbol} to close position {ticket}")
+                    continue
+                price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
+                
+                request = {
+                    "action": mt5.TRADE_ACTION_DEAL,
+                    "symbol": symbol,
+                    "volume": lot,
+                    "type": order_type,
+                    "position": ticket,
+                    "price": price,
+                    "deviation": 20,
+                    "magic": 999999,
+                    "comment": "Watchdog Emergency Flatten",
+                    "type_time": mt5.ORDER_TIME_GTC,
+                    "type_filling": mt5.ORDER_FILLING_IOC,
+                }
+                res = mt5.order_send(request)
+                if res.retcode != mt5.TRADE_RETCODE_DONE:
+                    logger.error(f"[WATCHDOG] Failed to close position {ticket}: {res.comment}")
+                else:
+                    logger.info(f"[WATCHDOG] Closed position {ticket} successfully")
+        mt5.shutdown()
+    except Exception as e:
+        logger.error(f"[WATCHDOG] Error during emergency flatten: {e}")
+
+
 def monitor_and_wait(process):
     """Monitor process via heartbeat, resources, and MT5 connection."""
     consecutive_failures = 0
@@ -180,25 +228,23 @@ def monitor_and_wait(process):
 
         time.sleep(10)
         
-
-        
-        # 1. Heartbeat check (after 25s boot time)
-        if time.time() - start_time > 25:
+        # 1. Heartbeat check (after 45s boot time to allow AI model warming)
+        if time.time() - start_time > 45:
             try:
-                resp = requests.get(HEARTBEAT_URL, timeout=5)
+                resp = requests.get(HEARTBEAT_URL, timeout=15)
                 if resp.ok and resp.json().get("status") == "online":
                     consecutive_failures = 0
                 else:
                     consecutive_failures += 1
-                    logger.warning(f"Heartbeat warning (failures: {consecutive_failures}/3)")
+                    logger.warning(f"Heartbeat warning (failures: {consecutive_failures}/5)")
             except Exception as e:
                 consecutive_failures += 1
-                logger.warning(f"Heartbeat failed: {e} (failures: {consecutive_failures}/3)")
+                logger.warning(f"Heartbeat failed: {e} (failures: {consecutive_failures}/5)")
             
-            if consecutive_failures >= 3:
-                logger.critical("3 consecutive heartbeat failures! Force restarting...")
+            if consecutive_failures >= 5:
+                logger.critical("5 consecutive heartbeat failures! Force restarting...")
                 recovery_logger.info("Bot unresponsive - force restart triggered")
-                send_telegram("🚨 <b>[WATCHDOG] Bot Unresponsive</b>\nHeartbeat failed 3x. Performing emergency position flattening and force restarting...")
+                send_telegram("🚨 <b>[WATCHDOG] Bot Unresponsive</b>\nHeartbeat failed 5x. Performing emergency position flattening and force restarting...")
                 
                 # Emergency position flatten
                 try:
@@ -253,7 +299,8 @@ def run_bot():
         restart_mt5()
         time.sleep(10)
 
-    python_exe = sys.executable
+    venv_python = os.path.join(BASE_DIR, ".venv_cuda", "Scripts", "python.exe")
+    python_exe = venv_python if os.path.exists(venv_python) else sys.executable
     try:
         process = subprocess.Popen(
             [python_exe, BOT_SCRIPT],
@@ -356,52 +403,4 @@ if __name__ == "__main__":
             # Respawn self as new process and exit current one
             subprocess.Popen([_python, _self])
             break
-
-
-def _flatten_all_positions_emergency():
-    """Emergency flatten: connects to MT5 and closes all open positions on XAUUSD/EURUSD."""
-    logger.critical("[WATCHDOG] Emergency flatten sequence triggered!")
-    try:
-        import MetaTrader5 as mt5
-        if not mt5.initialize():
-            logger.error("[WATCHDOG] MT5 initialization failed for emergency flatten")
-            return
-        
-        positions = mt5.positions_get()
-        if positions:
-            for pos in positions:
-                ticket = pos.ticket
-                symbol = pos.symbol
-                lot = pos.volume
-                # mt5.POSITION_TYPE_BUY = 0, mt5.POSITION_TYPE_SELL = 1
-                order_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
-                
-                # Fetch current tick for pricing
-                tick = mt5.symbol_info_tick(symbol)
-                if tick is None:
-                    logger.error(f"[WATCHDOG] Failed to get tick for {symbol} to close position {ticket}")
-                    continue
-                price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
-                
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": lot,
-                    "type": order_type,
-                    "position": ticket,
-                    "price": price,
-                    "deviation": 20,
-                    "magic": 999999,
-                    "comment": "Watchdog Emergency Flatten",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
-                }
-                res = mt5.order_send(request)
-                if res.retcode != mt5.TRADE_RETCODE_DONE:
-                    logger.error(f"[WATCHDOG] Failed to close position {ticket}: {res.comment}")
-                else:
-                    logger.info(f"[WATCHDOG] Closed position {ticket} successfully")
-        mt5.shutdown()
-    except Exception as e:
-        logger.error(f"[WATCHDOG] Error during emergency flatten: {e}")
 

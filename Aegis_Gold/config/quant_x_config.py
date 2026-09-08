@@ -56,6 +56,7 @@ _DEFAULTS: dict[str, Any] = {
     # ── Module Extension Flags (Aegis-Gold v6 upgrade) ───────────────────────
     "quant_features":              False,   # FFT/wavelet/Hurst features in FeatureFactory
     "kelly_sizing":                False,   # Fractional Kelly position sizing
+    "demo_unrestricted_mode":      False,   # Strictly enforce confidence thresholds and safety filters
 
     # ── Data Integrity ───────────────────────────────────────────────────────
     "data_integrity_gap_multiplier":   2.0,   # Bar gap > N × expected interval → flagged
@@ -149,22 +150,24 @@ class QuantXConfig:
                 self._raw = json.loads(_FLAGS_PATH.read_text(encoding="utf-8"))
                 logger.debug("[QUANT-X] Flags loaded from %s", _FLAGS_PATH)
             except Exception as exc:
-                logger.warning("[QUANT-X] Could not parse %s: %s — using defaults", _FLAGS_PATH, exc)
+                logger.warning("[QUANT-X] Could not parse %s: %s ? using defaults", _FLAGS_PATH, exc)
         else:
-            logger.warning("[QUANT-X] %s not found — all flags default to False", _FLAGS_PATH)
+            logger.warning("[QUANT-X] %s not found ? all flags default to False", _FLAGS_PATH)
 
     def reload(self) -> None:
         """Re-read flags file at runtime (e.g. after Telegram /reload command)."""
         self._raw = {}
         self._load()
 
-    def get(self, key: str) -> Any:
-        """Return value for key, falling back to _DEFAULTS, then None."""
+    def get(self, key: str, default: Any = None) -> Any:
+        """Return value for key, falling back to _DEFAULTS, then default, then None."""
         if key in self._raw:
             return self._raw[key]
         if key in _DEFAULTS:
             return _DEFAULTS[key]
-        logger.warning("[QUANT-X] Unknown config key '%s' — returning None", key)
+        if default is not None:
+            return default
+        logger.warning("[QUANT-X] Unknown config key '%s' ? returning None", key)
         return None
 
     def flag(self, key: str) -> bool:

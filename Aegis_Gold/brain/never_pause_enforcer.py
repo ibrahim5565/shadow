@@ -41,7 +41,7 @@ class NeverPauseEnforcer:
             'session_pause': False            # No session pauses
         }
         
-        logger.info("🚀 Never Pause Enforcer initialized - ALL PAUSES DISABLED")
+        logger.info("? Never Pause Enforcer initialized - ALL PAUSES DISABLED")
         self.start_monitoring()
 
     def start_monitoring(self):
@@ -56,12 +56,12 @@ class NeverPauseEnforcer:
                     time.sleep(1)  # Check every second
                     
                 except Exception as e:
-                    logger.error(f"❌ Never Pause Enforcer error: {e}")
+                    logger.error(f"[ERR] Never Pause Enforcer error: {e}")
                     time.sleep(1)
         
         self.monitoring_thread = threading.Thread(target=monitor, daemon=True)
         self.monitoring_thread.start()
-        logger.info("🔄 Never Pause monitoring started")
+        logger.info("[CYCLE] Never Pause monitoring started")
 
     def enforce_continuous_trading(self):
         """Force continuous trading by overriding any pause conditions"""
@@ -70,7 +70,7 @@ class NeverPauseEnforcer:
         
         # Check if it's been too long since last check (system might be paused)
         if current_time - self.last_check > 10:
-            logger.warning("⚠️  System pause detected - FORCING RESUME")
+            logger.warning("[WARN]  System pause detected - FORCING RESUME")
             self.force_resume_trading()
         
         self.last_check = current_time
@@ -102,9 +102,9 @@ class NeverPauseEnforcer:
             if os.path.exists(pause_file):
                 try:
                     os.remove(pause_file)
-                    logger.info(f"🗑️ Removed pause file: {pause_file}")
+                    logger.info(f"?? Removed pause file: {pause_file}")
                 except Exception as e:
-                    logger.error(f"❌ Could not remove pause file {pause_file}: {e}")
+                    logger.error(f"[ERR] Could not remove pause file {pause_file}: {e}")
 
     def set_force_trading_flags(self):
         """Set flags that force trading to continue"""
@@ -126,7 +126,7 @@ class NeverPauseEnforcer:
             with open('data/force_trading.json', 'w') as f:
                 json.dump(force_flags, f, indent=2)
         except Exception as e:
-            logger.error(f"❌ Could not write force trading flags: {e}")
+            logger.error(f"[ERR] Could not write force trading flags: {e}")
 
     def override_pause_conditions(self):
         """Override any conditions that might pause trading"""
@@ -154,7 +154,7 @@ class NeverPauseEnforcer:
     def force_resume_trading(self):
         """Force resume trading if any pause is detected"""
         
-        logger.warning("🚨 FORCING TRADING RESUME - OVERRIDING ALL PAUSES")
+        logger.warning("? FORCING TRADING RESUME - OVERRIDING ALL PAUSES")
         
         # Create resume signal file
         resume_signal = {
@@ -168,10 +168,10 @@ class NeverPauseEnforcer:
             with open('data/force_resume.json', 'w') as f:
                 json.dump(resume_signal, f, indent=2)
             
-            logger.info("✅ Force resume signal created")
+            logger.info("[OK] Force resume signal created")
             
         except Exception as e:
-            logger.error(f"❌ Could not create force resume signal: {e}")
+            logger.error(f"[ERR] Could not create force resume signal: {e}")
 
     def check_system_health(self):
         """Check if trading systems are healthy and active"""
@@ -187,7 +187,7 @@ class NeverPauseEnforcer:
         all_healthy = all(health_status.values())
         
         if not all_healthy:
-            logger.warning(f"⚠️  System health issue detected: {health_status}")
+            logger.warning(f"[WARN]  System health issue detected: {health_status}")
             self.force_resume_trading()
         
         return health_status
@@ -243,11 +243,11 @@ class NeverPauseEnforcer:
         
         health = self.check_system_health()
         
-        logger.info("🚀 Never Pause Enforcer Status:")
-        logger.info(f"   ⚡ Enforcement Active: {self.override_active}")
-        logger.info(f"   🔄 Continuous Mode: {self.force_continuous}")
-        logger.info(f"   🛡️ All Pauses Blocked: TRUE")
-        logger.info(f"   📊 System Health: {all(health.values())}")
+        logger.info("? Never Pause Enforcer Status:")
+        logger.info(f"   ? Enforcement Active: {self.override_active}")
+        logger.info(f"   [CYCLE] Continuous Mode: {self.force_continuous}")
+        logger.info(f"   ?? All Pauses Blocked: TRUE")
+        logger.info(f"   [CHART] System Health: {all(health.values())}")
 
     def get_status_report(self):
         """Get detailed status report"""
@@ -270,7 +270,7 @@ class NeverPauseEnforcer:
         self.active = False
         if self.monitoring_thread and self.monitoring_thread.is_alive():
             self.monitoring_thread.join(timeout=2)
-        logger.info("⏹️ Never Pause Enforcer stopped")
+        logger.info("?? Never Pause Enforcer stopped")
 
 # Global instance
 _never_pause_enforcer = None
@@ -300,7 +300,7 @@ def is_never_pause_active():
 
 if __name__ == "__main__":
     # Test the never pause enforcer
-    print("🚀 Testing Never Pause Enforcer...")
+    print("? Testing Never Pause Enforcer...")
     
     enforcer = NeverPauseEnforcer()
     
@@ -308,6 +308,6 @@ if __name__ == "__main__":
     time.sleep(10)
     
     status = enforcer.get_status_report()
-    print(f"✅ Enforcer Status: {status}")
+    print(f"[OK] Enforcer Status: {status}")
     
     enforcer.stop()

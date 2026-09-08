@@ -99,19 +99,10 @@ def _rsi(closes: list, period: int = 14) -> list:
 # CANDLE NORMALISATION HELPER
 # ═══════════════════════════════════════════════════════════════
 
-def _parse_candles(candles: list) -> tuple:
-    """Return (opens, highs, lows, closes) regardless of dict or tuple format."""
-    try:
-        opens  = [c["open"]  for c in candles]
-        highs  = [c["high"]  for c in candles]
-        lows   = [c["low"]   for c in candles]
-        closes = [c["close"] for c in candles]
-    except (TypeError, KeyError):
-        opens  = [c[1] for c in candles]
-        highs  = [c[2] for c in candles]
-        lows   = [c[3] for c in candles]
-        closes = [c[4] for c in candles]
-    return opens, highs, lows, closes
+def _parse_candles(candles) -> tuple:
+    """Return (opens, highs, lows, closes) regardless of dict or tuple or DataFrame format."""
+    from brain.candle_utils import parse_candles_df
+    return parse_candles_df(candles)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -589,7 +580,7 @@ def score_confidence(trend: dict, structure: dict, momentum: dict,
             "penalty":   penalty,
         },
         "grade": grade,
-        "tradeable": confidence >= 55,
+        "tradeable": confidence >= 50,
     }
 
 

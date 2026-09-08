@@ -27,25 +27,9 @@ class TrendDetector:
                 "reason": "Insufficent candles"
             }
 
-        # Standardize rates for M5
-        try:
-            closes_m5 = [c['close'] for c in candles_m5]
-            highs_m5 = [c['high'] for c in candles_m5]
-            lows_m5 = [c['low'] for c in candles_m5]
-        except TypeError:
-            closes_m5 = [c[4] for c in candles_m5]
-            highs_m5 = [c[2] for c in candles_m5]
-            lows_m5 = [c[3] for c in candles_m5]
-
-        # Standardize rates for M1
-        try:
-            closes_m1 = [c['close'] for c in candles_m1]
-            highs_m1 = [c['high'] for c in candles_m1]
-            lows_m1 = [c['low'] for c in candles_m1]
-        except TypeError:
-            closes_m1 = [c[4] for c in candles_m1]
-            highs_m1 = [c[2] for c in candles_m1]
-            lows_m1 = [c[3] for c in candles_m1]
+        from brain.candle_utils import parse_hlc
+        highs_m5, lows_m5, closes_m5 = parse_hlc(candles_m5)
+        highs_m1, lows_m1, closes_m1 = parse_hlc(candles_m1)
 
         # Indicator Calibrations
         ema9_m5 = EMA(closes_m5, 9)

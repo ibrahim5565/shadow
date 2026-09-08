@@ -243,12 +243,12 @@ class SelfOptimizer:
             if len(self.recent_analyses) > 200:
                 self.recent_analyses = self.recent_analyses[-200:]
             
-            logger.info(f"📊 Trade {analysis.trade_id} analyzed: {'WIN' if was_winner else 'LOSS'} | {recommendation}")
+            logger.info(f"[CHART] Trade {analysis.trade_id} analyzed: {'WIN' if was_winner else 'LOSS'} | {recommendation}")
             
             return analysis
             
         except Exception as e:
-            logger.error(f"❌ Trade analysis failed: {e}")
+            logger.error(f"[ERR] Trade analysis failed: {e}")
             return None
     
     def optimize(self, trade_memory_db) -> Dict:
@@ -268,7 +268,7 @@ class SelfOptimizer:
             return {"status": "insufficient_data"}
         
         try:
-            logger.info("🧬 Starting optimization cycle...")
+            logger.info("? Starting optimization cycle...")
             
             # Save current state for potential reversion
             self.parameter_history.append(self.state)
@@ -303,7 +303,7 @@ class SelfOptimizer:
             # Save state
             self._save_state()
             
-            logger.info(f"✅ Optimization complete (Gen {self.state.optimization_generation})")
+            logger.info(f"[OK] Optimization complete (Gen {self.state.optimization_generation})")
             logger.info(f"Changes: {changes}")
             
             return {
@@ -317,7 +317,7 @@ class SelfOptimizer:
             }
             
         except Exception as e:
-            logger.error(f"❌ Optimization failed: {e}")
+            logger.error(f"[ERR] Optimization failed: {e}")
             return {"status": "error", "error": str(e)}
     
     def _optimize_entry_thresholds(self) -> Dict:
@@ -474,7 +474,7 @@ class SelfOptimizer:
         
         # Emergency stop if losing streak too long
         if self.state.consecutive_losses > 10:
-            logger.warning(f"⚠️ EMERGENCY: Disabling learning after {self.state.consecutive_losses} consecutive losses")
+            logger.warning(f"[WARN] EMERGENCY: Disabling learning after {self.state.consecutive_losses} consecutive losses")
             self.state.learning_enabled = False
     
     def _check_if_early_entry(self, trade: Dict) -> bool:
@@ -603,21 +603,21 @@ class SelfOptimizer:
         self.parameter_history.pop()
         self._save_state()
         
-        logger.info(f"⏪ Reverted to generation {self.state.optimization_generation}")
+        logger.info(f"? Reverted to generation {self.state.optimization_generation}")
         return True
     
     def emergency_stop(self):
         """Emergency stop - freeze all learning."""
         self.state.learning_enabled = False
         self._save_state()
-        logger.warning("🚨 EMERGENCY STOP: Learning disabled")
+        logger.warning("? EMERGENCY STOP: Learning disabled")
     
     def resume_learning(self):
         """Resume learning after emergency stop."""
         self.state.learning_enabled = True
         self.state.consecutive_losses = 0
         self._save_state()
-        logger.info("✅ Learning resumed")
+        logger.info("[OK] Learning resumed")
     
     def _save_state(self):
         """Save optimization state to disk."""

@@ -6,16 +6,28 @@ This script tests the brain decision logic to ensure action="TRADE" is returned
 
 import sys
 import os
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 from brain.brain import decide
 
-# Mock data for testing
-mock_ticks = [{"bid": 1.0850 + (i * 0.0001)} for i in range(200)]
-mock_candles = [
-    {"high": 1.0855, "low": 1.0845, "close": 1.0850, "open": 1.0848}
-    for _ in range(100)
-]
+# Mock data for testing realistic swing setup
+mock_ticks = [{"bid": 1.0850 + (i % 5 * 0.0001), "ask": 1.0852 + (i % 5 * 0.0001)} for i in range(200)]
+mock_candles = []
+base_p = 1.0850
+for i in range(100):
+    wave = (i % 10 - 5) * 0.0002
+    mock_candles.append({
+        "open": base_p + wave,
+        "high": base_p + wave + 0.0004,
+        "low": base_p + wave - 0.0004,
+        "close": base_p + wave + 0.0001
+    })
 mock_account = {
     "balance": 10000.0,
     "equity": 10000.0,

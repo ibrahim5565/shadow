@@ -4,8 +4,17 @@ Test Telegram Status Command - Check Confidence Display
 """
 import requests
 import os
+import sys
+import urllib3
 from dotenv import load_dotenv
 
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 load_dotenv()
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -17,12 +26,13 @@ def send_status_command():
     
     data = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "text": "/status",
+        "text": "📊 /status",
         "parse_mode": "HTML"
     }
     
     try:
-        response = requests.post(url, data=data, timeout=10)
+        print("Sending /status command to test confidence display...")
+        response = requests.post(url, data=data, verify=False, timeout=10)
         if response.status_code == 200:
             print("✅ /status command sent successfully")
             print("Check Telegram for confidence display")

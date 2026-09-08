@@ -46,3 +46,11 @@ class SpreadFilter:
             "effective_limit": round(effective_limit, 2),
             "reason": reason
         }
+
+    def check(self, current_spread: float, session: str = "LONDON", session_spread_max: float = 30.0) -> bool:
+        res = self.analyze(current_spread, session, session_spread_max)
+        return res["spread_ok"]
+
+    def is_valid(self, current_spread: float, session: str = "LONDON", session_spread_max: float = 30.0) -> bool:
+        return self.check(current_spread, session, session_spread_max)
+

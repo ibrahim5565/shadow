@@ -15,18 +15,40 @@ class CandleAI:
         logger.info("Local OMEGA Candle AI Engine v2.0 initialized.")
 
     def _parse(self, candles):
-        """Parse candles to lists regardless of dict/tuple format."""
+        """Parse candles to lists regardless of dict/tuple/DataFrame format."""
+        # Pandas DataFrame branch
+        if hasattr(candles, 'iloc') and hasattr(candles, 'columns'):
+            opens  = candles['open'].values.astype(float).tolist()  if 'open'  in candles.columns else [0.0] * len(candles)
+            highs  = candles['high'].values.astype(float).tolist()  if 'high'  in candles.columns else [0.0] * len(candles)
+            lows   = candles['low'].values.astype(float).tolist()   if 'low'   in candles.columns else [0.0] * len(candles)
+            closes = candles['close'].values.astype(float).tolist() if 'close' in candles.columns else [0.0] * len(candles)
+            return opens, highs, lows, closes
+        # NumPy structured array branch
+        if hasattr(candles, 'dtype') and hasattr(candles.dtype, 'names') and candles.dtype.names:
+            opens  = candles['open'].astype(float).tolist()
+            highs  = candles['high'].astype(float).tolist()
+            lows   = candles['low'].astype(float).tolist()
+            closes = candles['close'].astype(float).tolist()
+            return opens, highs, lows, closes
+        # List-of-dicts or list-of-tuples
         try:
             opens  = [c['open']  for c in candles]
             highs  = [c['high']  for c in candles]
             lows   = [c['low']   for c in candles]
             closes = [c['close'] for c in candles]
-        except TypeError:
-            opens  = [c[1] for c in candles]
-            highs  = [c[2] for c in candles]
-            lows   = [c[3] for c in candles]
-            closes = [c[4] for c in candles]
+        except (TypeError, KeyError):
+            try:
+                opens  = [c[1] for c in candles]
+                highs  = [c[2] for c in candles]
+                lows   = [c[3] for c in candles]
+                closes = [c[4] for c in candles]
+            except Exception:
+                opens  = [float(getattr(c, 'open',  0)) for c in candles]
+                highs  = [float(getattr(c, 'high',  0)) for c in candles]
+                lows   = [float(getattr(c, 'low',   0)) for c in candles]
+                closes = [float(getattr(c, 'close', 0)) for c in candles]
         return opens, highs, lows, closes
+
 
     def analyze(self, candles) -> dict:
         """

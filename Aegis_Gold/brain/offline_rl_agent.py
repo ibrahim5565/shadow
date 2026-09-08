@@ -47,10 +47,13 @@ class AegisOfflineRLAgent:
         "EXIT", "REDUCE_POSITION", "SCALE_IN", "SCALE_OUT"
     ]
 
-    def __init__(self, model_path=None):
+    def __init__(self, model_path=None, state_dim=None, action_dim=None, input_dim=None, output_dim=None):
         self.model_path = model_path or OFFLINE_MODEL_PATH
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = AegisOfflineQNetwork()
+        
+        in_dim = input_dim or state_dim or 9
+        out_dim = output_dim or action_dim or 8
+        self.model = AegisOfflineQNetwork(input_dim=in_dim, output_dim=out_dim)
         self._fitted = False
         
         if os.path.exists(self.model_path):

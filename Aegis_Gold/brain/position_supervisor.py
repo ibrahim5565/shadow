@@ -12,26 +12,49 @@ from brain.indicators import RSI
 logger = logging.getLogger("aegis.position_supervisor")
 
 class PositionSupervisor:
-    def __init__(self, gateway, risk_mgr):
+    def __init__(self, gateway=None, risk_mgr=None):
         self.gateway = gateway
         self.risk_mgr = risk_mgr
+        self._bound = gateway is not None and risk_mgr is not None
+        self._limit_warning_logged = False
         self.signal_queue: List[Dict[str, Any]] = []
-        logger.info("🛡️ Position Supervisor Engine Initialized")
+        logger.info("?? Position Supervisor Engine Initialized")
+
+    def bind(self, gateway, risk_mgr):
+        self.gateway = gateway
+        self.risk_mgr = risk_mgr
+        self._bound = True
+        self._limit_warning_logged = False
+        logger.info("?? PositionSupervisor.bind() called ? gateway and risk_mgr now live.")
 
     def get_dynamic_trade_limit(self, volatility_state: str, is_emergency: bool = False) -> int:
         """
         Dynamic Trade Limits:
-        Unlimited mode: returns cfg.MAX_OPEN_TRADES (999)
+        Unlimited mode: returns cfg.MAX_OPEN_TRADES (999999 by design — intentional config, not a placeholder)
         Emergency: returns 1
+
+        GUARD: If called before .bind() is invoked, logs a one-time critical warning.
+        The returned value is still valid (derived from config), but evaluate_position()
+        MUST NOT be called before .bind() or it will AttributeError on self.risk_mgr.
         """
+        if not self._bound and not self._limit_warning_logged:
+            logger.critical(
+                "[PositionSupervisor] get_dynamic_trade_limit() called BEFORE .bind() — "
+                "gateway and risk_mgr are None. Trade limit is from config (intentional), "
+                "but DO NOT call evaluate_position() until .bind() is invoked."
+            )
+            self._limit_warning_logged = True
+
         # Emergency always restricts
         if is_emergency:
             return cfg.VOLATILITY_LIMITS.get("EMERGENCY", 1)
 
-        # If MAX_OPEN_TRADES is set to unlimited (>= 100), respect that directly
+        # If MAX_OPEN_TRADES is set to unlimited (>= 100), respect that directly.
+        # NOTE: cfg.MAX_OPEN_TRADES = 999999 is INTENTIONAL "unlimited" configuration.
+        # This is not a sentinel or placeholder — it is the explicit operator setting.
         max_from_cfg = getattr(cfg, 'MAX_OPEN_TRADES', 10)
         if max_from_cfg >= 100:
-            return max_from_cfg  # UNLIMITED mode
+            return max_from_cfg  # UNLIMITED mode — intentional operator config
 
         # Otherwise use per-volatility limits
         limit = cfg.VOLATILITY_LIMITS.get(volatility_state, 3)
@@ -71,6 +94,17 @@ class PositionSupervisor:
         - Liquidity change (TPS drop / spread increase)
         - Profit protection (breakeven, trailing, dynamic TP)
         """
+        # ── UNBOUND GUARD ─────────────────────────────────────────────────────
+        # If .bind() was never called, self.risk_mgr and self.gateway are None.
+        # Proceeding would raise AttributeError on self.risk_mgr.check_breakeven().
+        if not self._bound:
+            logger.critical(
+                f"[PositionSupervisor] evaluate_position() called BEFORE .bind() — "
+                f"self.risk_mgr is None. Returning HOLD to prevent AttributeError. "
+                f"Call .bind(gateway, risk_mgr) before using evaluate_position()."
+            )
+            return {"action": "HOLD", "reason": "PositionSupervisor not bound — call .bind() first"}
+
         symbol = pos.symbol
         ticket = pos.ticket
         pos_dir = "BUY" if pos.type == 0 else "SELL"
@@ -116,10 +150,8 @@ class PositionSupervisor:
         # ── 4. MOMENTUM WEAKENING DETECTION (DISABLED FOR FIRST 200 TRADES) ───
         # FIRST 200 TRADES MODE: Don't exit on small RSI pullbacks - hold for bigger profits
         # Only exit if BOTH momentum is dead AND we're in a loss
-        try:
-            closes_m1 = [c['close'] for c in candles_m1]
-        except TypeError:
-            closes_m1 = [c[4] for c in candles_m1]
+        from brain.candle_utils import parse_closes
+        closes_m1 = parse_closes(candles_m1)
 
         if len(closes_m1) >= 14:
             rsi_list = RSI(closes_m1, 14)
@@ -164,9 +196,10 @@ class PositionSupervisor:
                 return {"action": "CLOSE", "reason": f"Emergency DD Capital Protection @ ${live_profit:.2f}"}
 
         # ── 7. PROFIT PROTECTION FALLBACK (Breakeven & Trailing Stops) ──────
-        # Run breakeven check
-        self.risk_mgr.check_breakeven(pos)
-        self.risk_mgr.check_trailing_stop(pos)
+        tier = getattr(pos, 'pattern_tier', 'scalp')
+        self.risk_mgr.check_breakeven(pos, pattern_tier=tier)
+        self.risk_mgr.check_trailing_stop(pos, pattern_tier=tier)
         self.risk_mgr.check_dynamic_tp(pos, self.gateway)
 
         return {"action": "HOLD", "reason": "Conditions stable"}
+

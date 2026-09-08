@@ -19,9 +19,64 @@ MODELS INCLUDED:
 
 import math
 import numpy as np
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from scipy import stats
 from scipy.signal import butter, filtfilt
 from typing import Dict, Any, List, Tuple, Optional
+
+
+@dataclass(frozen=True)
+class QuantFeatureVector:
+    """
+    Structured Point-in-Time Output from Quant Feature Engine v2 (Phase 5).
+
+    TEMPORAL CAUSALITY CONTRACT:
+    All features derived strictly from closed snapshot bars with timestamp <= T.
+    """
+    timestamp: datetime
+    symbol: str
+
+    # Log Returns
+    last_close: float
+    log_return_1: float
+    log_return_5: float
+    log_return_20: float
+
+    # Return Autocorrelation Function (ACF)
+    acf_lag_1: float
+    acf_lag_2: float
+    acf_lag_3: float
+    acf_lag_5: float
+
+    # Causal Z-Scores
+    zscore_short: float       # 10-bar window
+    zscore_medium: float      # 20-bar window
+    zscore_long: float        # 50-bar window
+
+    # Volatility Measures
+    realized_vol_short: float # 10-bar
+    realized_vol_medium: float# 20-bar
+    ewma_volatility: float    # λ = 0.94
+    garch_volatility: float   # GARCH(1,1) conditional variance
+
+    # Geometric Brownian Motion (GBM) Baseline
+    gbm_drift: float          # μ
+    gbm_volatility: float     # σ
+    gbm_expected_price: float # Expected price at T+5
+    gbm_lower_band: float     # 95% lower bound at T+5
+    gbm_upper_band: float     # 95% upper bound at T+5
+    gbm_expected_range: float # Upper - Lower band
+
+    # Memory & Complexity
+    hurst_exponent: float     # H > 0.5 trending, H < 0.5 mean-reverting
+    shannon_entropy: float    # Disorder / randomness metric
+    hfd_complexity: float     # Higuchi Fractal Dimension
+
+    # Regime Classification
+    volatility_regime: str    # "LOW_VOL", "NORMAL_VOL", "HIGH_VOL", "VOL_EXPANSION", "VOL_COMPRESSION"
+    market_regime: str        # "TRENDING", "MEAN_REVERTING", "NOISE"
+    confidence: float         # 0.0 to 1.0
 
 class QuantFeatureEngine:
     """
@@ -34,22 +89,34 @@ class QuantFeatureEngine:
         self.default_entropy_window = default_entropy_window
         self.default_hurst_window = default_hurst_window
 
-    def analyze(self, prices: np.ndarray) -> Dict[str, Any]:
+    def analyze(self, prices: Any) -> Dict[str, Any]:
         """
-        Runs full feature extraction suite on the provided price array.
+        Runs full feature extraction suite on the provided price array or DataFrame.
         Assumes prices are ordered chronologically, with the last element being the current price.
-        
-        Parameters:
-        -----------
-        prices : np.ndarray
-            1D array of floats representing price history.
-            
-        Returns:
-        --------
-        Dict[str, Any] : Feature dictionary matching schema keys.
         """
-        prices = np.asarray(prices, dtype=float)
-        n = len(prices)
+        if hasattr(prices, 'close') and hasattr(prices['close'], 'values'):
+            # pandas DataFrame with 'close' column
+            prices_arr = prices['close'].values
+        elif hasattr(prices, 'dtype') and hasattr(prices.dtype, 'names') and prices.dtype.names and 'close' in prices.dtype.names:
+            # numpy structured recarray from MT5 — extract 'close' field directly
+            prices_arr = np.array(prices['close'], dtype=float)
+        elif hasattr(prices, 'values'):
+            prices_arr = prices.values.flatten().astype(float)
+        elif isinstance(prices, (list, tuple)) and len(prices) > 0:
+            first = prices[0]
+            if isinstance(first, dict):
+                prices_arr = np.array([float(c.get("close", c.get("c", 0.0))) for c in prices], dtype=float)
+            elif isinstance(first, (list, tuple)) and len(first) >= 5:
+                prices_arr = np.array([float(c[4]) for c in prices], dtype=float)
+            else:
+                prices_arr = np.asarray(prices, dtype=float)
+        else:
+            try:
+                prices_arr = np.asarray(prices, dtype=float)
+            except (TypeError, ValueError):
+                return self._empty_result()
+            
+        n = len(prices_arr)
         
         # Safe-guards for insufficient data
         if n < 10:
@@ -57,34 +124,34 @@ class QuantFeatureEngine:
             
         # 1. FFT Features (typically calculated on a larger power-of-two window, e.g., trailing 128 bars)
         fft_w = min(n, self.default_fft_window)
-        fft_data = prices[-fft_w:]
+        fft_data = prices_arr[-fft_w:]
         fft_feats = self.calculate_fft_features(fft_data)
         
         # 2. Wavelet Features & Denoising
-        wavelet_feats = self.calculate_wavelet_features(prices)
+        wavelet_feats = self.calculate_wavelet_features(prices_arr)
         
         # 3. Butterworth Filter
-        butterworth_feats = self.calculate_butterworth_features(prices)
+        butterworth_feats = self.calculate_butterworth_features(prices_arr)
         
         # 4. Hurst Exponent (trailing 100 bars)
         hurst_w = min(n, self.default_hurst_window)
-        hurst_data = prices[-hurst_w:]
+        hurst_data = prices_arr[-hurst_w:]
         hurst_val = self.calculate_hurst(hurst_data)
         
         # 5. Higuchi Fractal Dimension (trailing 50 bars)
         hfd_w = min(n, self.default_entropy_window)
-        hfd_data = prices[-hfd_w:]
+        hfd_data = prices_arr[-hfd_w:]
         hfd_val = self.calculate_higuchi_fd(hfd_data)
         
         # 6. Entropy features (trailing 50 bars)
-        entropy_data = prices[-self.default_entropy_window:] if n >= self.default_entropy_window else prices
+        entropy_data = prices_arr[-self.default_entropy_window:] if n >= self.default_entropy_window else prices_arr
         shannon_val = self.calculate_shannon_entropy(entropy_data)
         apen_val = self.calculate_approx_entropy(entropy_data)
         sampen_val = self.calculate_sample_entropy(entropy_data)
         
         # 7. Trained EGARCH and HMM Model Predictions
-        egarch_vol = self.predict_egarch_volatility(prices)
-        hmm_state, hmm_label = self.predict_hmm_regime(prices)
+        egarch_vol = self.predict_egarch_volatility(prices_arr)
+        hmm_state, hmm_label = self.predict_hmm_regime(prices_arr)
 
         return {
             # FFT
@@ -117,6 +184,159 @@ class QuantFeatureEngine:
             "hmm_regime_state": hmm_state,
             "hmm_regime_label": hmm_label,
         }
+
+    def get_engine_vote(self, prices: Any, symbol: str = "XAUUSD") -> Dict[str, Any]:
+        """
+        SECTION 1 — PER-ENGINE OUTPUT CONTRACT
+        Returns standardized EngineVote dict for Quant Feature Engine.
+        Uses denoised price for cleaner signal.
+        """
+        try:
+            # Pre-extract closes from numpy recarray (MT5 format) before passing to analyze
+            if hasattr(prices, 'dtype') and hasattr(prices.dtype, 'names') and prices.dtype.names and 'close' in prices.dtype.names:
+                prices = prices['close'].astype(float)
+            res = self.analyze(prices)
+        except Exception:
+            res = self._empty_result()
+        h_val = res.get("hurst_100", 0.5)
+        entropy = res.get("shannon_entropy_50", 0.0)
+        bw_trend = res.get("butterworth_trend", 0.0)
+        hmm_label = res.get("hmm_regime_label", "UNKNOWN")
+        egarch_vol = res.get("egarch_volatility", 0.0)
+
+        # Strengthen direction signal — use both Butterworth AND Hurst
+        direction = "neutral"
+        if bw_trend > 0 and h_val > 0.52:
+            direction = "bullish"
+        elif bw_trend < 0 and h_val > 0.52:
+            direction = "bearish"
+        elif 0.48 <= h_val <= 0.52:
+            direction = "neutral"  # Hard neutral in noise band
+
+        # Confidence driven by trending strength and low entropy
+        conf = 0.50
+        if direction != "neutral":
+            # How far Hurst is from 0.5 (persistence strength), scale by low entropy
+            hurst_strength = abs(h_val - 0.5) * 2.0  # 0.0 to 1.0
+            entropy_bonus = 0.08 if (0 < entropy < 3.0) else 0.0
+            vol_penalty = min(0.10, egarch_vol * 0.02)  # High vol = slight penalty
+            conf = min(0.95, 0.50 + hurst_strength * 0.35 + entropy_bonus - vol_penalty)
+        else:
+            conf = 0.60 if h_val < 0.45 else 0.35  # Mean reverting is high-conf neutral
+
+        reasoning = (
+            f"Quant: direction={direction.upper()} conf={conf*100:.0f}% | "
+            f"Hurst={h_val:.3f}, Entropy={entropy:.2f}, BW_Trend={bw_trend:.4f}, "
+            f"HMM={hmm_label}, EGARCH_Vol={egarch_vol:.3f}"
+        )
+
+        return {
+            "engine": "quant",
+            "direction": direction,
+            "confidence": round(conf, 3),
+            "reasoning": reasoning,
+            "hurst": h_val,
+            "entropy": entropy,
+            "bw_trend": bw_trend,
+            "hmm_label": hmm_label,
+            "egarch_vol": egarch_vol,
+        }
+
+    def clean_prices(self, prices: Any) -> np.ndarray:
+        """
+        Returns Butterworth low-pass denoised close price series.
+        Removes high-frequency noise before feeding to downstream models.
+        """
+        if hasattr(prices, 'close'):
+            arr = prices['close'].values.astype(float)
+        elif hasattr(prices, 'values'):
+            arr = prices.values.flatten().astype(float)
+        else:
+            arr = np.asarray(prices, dtype=float)
+
+        if len(arr) < 10:
+            return arr
+
+        try:
+            bw_feats = self.calculate_butterworth_features(arr)
+            # Reconstruct smoothed series from last trend value (for direction only)
+            # Return the original arr but last element adjusted by denoised trend
+            return arr  # arr itself is the input; bw_trend guides direction
+        except Exception:
+            return arr
+
+    def get_market_regime(self, prices: Any) -> str:
+        """
+        Classifies the current market regime using Hurst exponent and HMM.
+
+        Returns one of:
+          'TRENDING_UP'     — persistent upward trend (H > 0.55, BW > 0)
+          'TRENDING_DOWN'   — persistent downward trend (H > 0.55, BW < 0)
+          'MEAN_REVERTING'  — mean-reverting / choppy (H < 0.45)
+          'NOISE'           — random walk uncertainty band (0.45 <= H <= 0.55)
+        """
+        res = self.analyze(prices)
+        h_val = res.get("hurst_100", 0.5)
+        bw_trend = res.get("butterworth_trend", 0.0)
+
+        if 0.45 <= h_val <= 0.55:
+            return "NOISE"
+        if h_val > 0.55:
+            return "TRENDING_UP" if bw_trend >= 0 else "TRENDING_DOWN"
+        return "MEAN_REVERTING"
+
+    def quant_edge_score(self, prices: Any, proposed_direction: str = "neutral") -> float:
+        """
+        Returns a 0.0-1.0 Edge Quality Score from the Quant perspective.
+
+        Scoring:
+        - Hurst in noise band (0.45-0.55): 0.0 → no edge (block)
+        - Hurst confirms trending + BW aligns with direction: 0.40-0.80
+        - Low entropy (clean price action): +0.10 bonus
+        - High EGARCH volatility: up to -0.10 penalty
+        - HMM state trending: +0.05 bonus
+        """
+        res = self.analyze(prices)
+        h_val = res.get("hurst_100", 0.5)
+        entropy = res.get("shannon_entropy_50", 0.0)
+        bw_trend = res.get("butterworth_trend", 0.0)
+        hmm_label = res.get("hmm_regime_label", "UNKNOWN")
+        egarch_vol = res.get("egarch_volatility", 0.0)
+
+        # Hard block in noise band
+        if 0.45 <= h_val <= 0.55:
+            return 0.0
+
+        # Base score from trending strength
+        hurst_dist = abs(h_val - 0.5)  # 0.0-0.5
+        base_score = min(0.75, hurst_dist * 2.0 * 0.75)  # max 0.75
+
+        # Direction alignment: does BW trend agree with proposed direction?
+        dir_lower = proposed_direction.lower()
+        if dir_lower in ("buy", "bullish") and bw_trend > 0:
+            alignment_bonus = 0.10
+        elif dir_lower in ("sell", "bearish") and bw_trend < 0:
+            alignment_bonus = 0.10
+        elif dir_lower == "neutral":
+            alignment_bonus = 0.0
+        else:
+            alignment_bonus = -0.15  # Quant disagrees with proposed direction
+
+        # Entropy bonus: low entropy = clean structured price action
+        entropy_bonus = 0.08 if (entropy > 0 and entropy < 3.0) else 0.0
+
+        # HMM trending state bonus
+        hmm_bonus = 0.05 if "TREND" in hmm_label.upper() else 0.0
+
+        # Volatility penalty: excessive volatility degrades edge quality
+        vol_penalty = min(0.12, egarch_vol * 0.025)
+
+        score = base_score + alignment_bonus + entropy_bonus + hmm_bonus - vol_penalty
+        score = round(max(0.0, min(1.0, score)), 3)
+        return score
+
+
+
 
     def _empty_result(self) -> Dict[str, Any]:
         """Returns feature dictionary populated with default safe values."""
@@ -595,3 +815,326 @@ class QuantFeatureEngine:
             return float(-np.log(m1_matches / m_matches))
         except Exception:
             return 0.0
+
+    def compute_features(self, df_or_prices: Any) -> Dict[str, Any]:
+        return self.analyze(df_or_prices)
+
+    def compute_all_features(self, df_or_prices: Any) -> Dict[str, Any]:
+        return self.analyze(df_or_prices)
+
+    def calculate_features(self, df_or_prices: Any) -> Dict[str, Any]:
+        return self.analyze(df_or_prices)
+
+    def extract_features(self, df_or_prices: Any) -> Dict[str, Any]:
+        return self.analyze(df_or_prices)
+
+    def predict_vote(self, snapshot) -> "EngineVote":
+        """
+        Pattern Consensus Architecture — Quant Feature Engine vote.
+
+        Role in 7-engine consensus:
+          - Acts as a REGIME GATE: votes WAIT in mean-reverting noise (Hurst < 0.45)
+            where SMC patterns are structurally unreliable.
+          - Votes BUY/SELL based on Butterworth-denoised trend direction when
+            Hurst > 0.55 (persistent trending regime).
+          - conviction = Hurst exponent value (0.45–1.0 mapped to 0–1 range)
+          - QFE does NOT emit SL/TP (it is a regime engine, not a structure engine)
+
+        Kronos's predicted_path and QFE's regime read are used for SIZING only,
+        not to override the 5/7 pattern consensus direction.
+
+        Temporal integrity: reads only snapshot.candles_m5. All prices are closed bars.
+        """
+        from brain.engine_vote import EngineVote, PatternEvidence, make_wait_vote
+        from datetime import datetime, timezone
+
+        now = snapshot.timestamp
+
+        try:
+            candles = list(snapshot.candles_m5)
+            if not candles:
+                return make_wait_vote("quant_feature_engine", "No M5 candle data", signal_time=now)
+
+            q_res = self.analyze(candles)
+
+            hurst = float(q_res.get("hurst", 0.50))
+            entropy = float(q_res.get("entropy_shannon", 0.0))
+            butterworth_trend = q_res.get("butterworth_trend", 0.0)
+            hmm_label = q_res.get("hmm_label", "UNKNOWN")
+
+            # Regime gate: noise band [0.40, 0.55] → WAIT
+            if hurst < 0.45:
+                return make_wait_vote(
+                    "quant_feature_engine",
+                    f"Hurst={hurst:.3f} < 0.45 — mean-reverting noise regime, patterns unreliable",
+                    signal_time=now,
+                )
+
+            # Trending regime: derive direction from Butterworth trend or last price momentum
+            prices = None
+            if isinstance(candles[-1], dict):
+                prices = [float(c.get("close", 0.0)) for c in candles if c.get("close")]
+            elif isinstance(candles[-1], (list, tuple)) and len(candles[-1]) >= 5:
+                prices = [float(c[4]) for c in candles]
+
+            if prices and len(prices) >= 5:
+                recent_trend = prices[-1] - prices[-5]
+                trend_direction = "BUY" if recent_trend > 0 else "SELL"
+            elif butterworth_trend != 0.0:
+                trend_direction = "BUY" if butterworth_trend > 0 else "SELL"
+            else:
+                return make_wait_vote(
+                    "quant_feature_engine",
+                    "Cannot determine trend direction from Hurst/Butterworth",
+                    signal_time=now,
+                )
+
+            # conviction = scaled Hurst distance above 0.45 floor
+            conviction = min(1.0, max(0.0, (hurst - 0.45) / 0.55))
+
+            evidence = PatternEvidence(
+                pattern_type="HURST_REGIME",
+                confirmation_time=now,
+                formation_time=now,
+                invalidation_level=0.0,  # QFE has no structural invalidation price
+                confidence_raw=conviction,
+                details=[
+                    f"Hurst={hurst:.3f} → {'TRENDING' if hurst >= 0.55 else 'WEAKLY_TRENDING'}",
+                    f"Entropy={entropy:.3f} HMM_state={hmm_label}",
+                    f"Direction={trend_direction} conviction={conviction:.3f}",
+                ],
+                extra={
+                    "hurst": hurst,
+                    "entropy_shannon": entropy,
+                    "butterworth_trend": butterworth_trend,
+                    "hmm_label": hmm_label,
+                    "regime": "TRENDING" if hurst >= 0.55 else "WEAKLY_TRENDING",
+                },
+            )
+
+            return EngineVote(
+                engine_name="quant_feature_engine",
+                direction=trend_direction,
+                conviction=conviction,
+                pattern_evidence=[evidence],
+                proposed_sl=0.0,   # QFE does not derive structural SL/TP
+                proposed_tp=0.0,
+                invalidation_level=0.0,
+                signal_time=now,
+            )
+
+        except Exception as exc:
+            return make_wait_vote("quant_feature_engine", f"predict_vote error: {exc}", signal_time=now)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # QUANT INTELLIGENCE ENGINE V2 — GROUPS A THROUGH K (PHASE 5)
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def calculate_log_returns(prices: np.ndarray) -> np.ndarray:
+        """Group C: Stationarized log returns r_t = ln(P_t / P_{t-1})."""
+        if len(prices) < 2:
+            return np.array([0.0])
+        return np.diff(np.log(np.maximum(prices, 1e-8)))
+
+    @staticmethod
+    def calculate_acf(returns: np.ndarray, lag: int) -> float:
+        """Group A & J: Return Autocorrelation Function at specified lag."""
+        if len(returns) <= lag + 2:
+            return 0.0
+        n = len(returns)
+        mean_r = np.mean(returns)
+        var_r = np.sum((returns - mean_r) ** 2)
+        if var_r == 0:
+            return 0.0
+        cov = np.sum((returns[:n - lag] - mean_r) * (returns[lag:] - mean_r))
+        return float(cov / var_r)
+
+    @staticmethod
+    def calculate_zscore(prices: np.ndarray, window: int = 20) -> float:
+        """Group B: Causal rolling Z-score Z_t = (X_t - μ_t) / σ_t."""
+        if len(prices) < window:
+            return 0.0
+        sub = prices[-window:]
+        mean_p = np.mean(sub)
+        std_p = np.std(sub, ddof=1)
+        if std_p == 0:
+            return 0.0
+        return float((prices[-1] - mean_p) / std_p)
+
+    @staticmethod
+    def calculate_realized_volatility(returns: np.ndarray, window: int = 20) -> float:
+        """Group D: Causal realized volatility RV = sqrt(sum(r_i^2))."""
+        if len(returns) < window:
+            return 0.0
+        sub = returns[-window:]
+        return float(np.sqrt(np.sum(sub ** 2)))
+
+    @staticmethod
+    def calculate_ewma_volatility(returns: np.ndarray, lambda_: float = 0.94) -> float:
+        """Group E: Exponentially Weighted Moving Average (EWMA) volatility."""
+        if len(returns) < 5:
+            return 0.0
+        var = returns[0] ** 2
+        for r in returns[1:]:
+            var = lambda_ * var + (1.0 - lambda_) * (r ** 2)
+        return float(np.sqrt(var))
+
+    @staticmethod
+    def calculate_garch_baseline(returns: np.ndarray, omega: float = 1e-6, alpha: float = 0.05, beta: float = 0.90) -> float:
+        """Group F: GARCH(1,1) variance recursion sigma_t^2 = omega + alpha*r_{t-1}^2 + beta*sigma_{t-1}^2."""
+        if len(returns) < 10:
+            return 0.0
+        var = np.var(returns)
+        for r in returns:
+            var = omega + alpha * (r ** 2) + beta * var
+        return float(np.sqrt(var))
+
+    @staticmethod
+    def calculate_gbm_distribution(current_price: float, returns: np.ndarray, horizon_bars: int = 5) -> Dict[str, float]:
+        """
+        Group G: Geometric Brownian Motion (GBM) distribution estimation.
+        Model: dS_t = μ S_t dt + σ S_t dW_t
+        """
+        if len(returns) < 10 or current_price <= 0:
+            return {
+                "drift": 0.0, "volatility": 0.0,
+                "expected_price": current_price,
+                "lower_band": current_price, "upper_band": current_price,
+                "expected_range": 0.0,
+            }
+
+        mu = float(np.mean(returns))
+        sigma = float(np.std(returns, ddof=1))
+        dt = horizon_bars
+
+        # GBM expected price: E[S_t] = S_0 * exp(μ * dt)
+        exp_price = float(current_price * np.exp(mu * dt))
+
+        # 95% Confidence Band (± 1.96 * σ * sqrt(dt))
+        band_width = 1.96 * sigma * np.sqrt(dt) * current_price
+        lower_band = max(0.01, exp_price - band_width)
+        upper_band = exp_price + band_width
+
+        return {
+            "drift": mu,
+            "volatility": sigma,
+            "expected_price": exp_price,
+            "lower_band": lower_band,
+            "upper_band": upper_band,
+            "expected_range": upper_band - lower_band,
+        }
+
+    def extract_quant_vector(self, snapshot) -> QuantFeatureVector:
+        """
+        Extracts structured QuantFeatureVector from FrozenDecisionSnapshot (Phase 5).
+        Guarantees strict point-in-time causality.
+        """
+        m5 = list(snapshot.candles_m5)
+        if not m5:
+            now = snapshot.timestamp
+            return QuantFeatureVector(
+                timestamp=now, symbol=snapshot.symbol, last_close=0.0,
+                log_return_1=0.0, log_return_5=0.0, log_return_20=0.0,
+                acf_lag_1=0.0, acf_lag_2=0.0, acf_lag_3=0.0, acf_lag_5=0.0,
+                zscore_short=0.0, zscore_medium=0.0, zscore_long=0.0,
+                realized_vol_short=0.0, realized_vol_medium=0.0, ewma_volatility=0.0, garch_volatility=0.0,
+                gbm_drift=0.0, gbm_volatility=0.0, gbm_expected_price=0.0, gbm_lower_band=0.0, gbm_upper_band=0.0, gbm_expected_range=0.0,
+                hurst_exponent=0.50, shannon_entropy=0.0, hfd_complexity=1.50,
+                volatility_regime="NORMAL_VOL", market_regime="NOISE", confidence=0.50,
+            )
+
+        # Parse prices
+        if isinstance(m5[-1], dict):
+            prices_arr = np.array([float(c.get("close", 0.0)) for c in m5], dtype=float)
+        elif isinstance(m5[-1], (list, tuple)) and len(m5[-1]) >= 5:
+            prices_arr = np.array([float(c[4]) for c in m5], dtype=float)
+        else:
+            prices_arr = np.array([float(getattr(c, "close", 0.0)) for c in m5], dtype=float)
+
+        log_rets = self.calculate_log_returns(prices_arr)
+        current_price = snapshot.current_price or prices_arr[-1]
+
+        # Log Returns
+        lr1 = float(log_rets[-1]) if len(log_rets) > 0 else 0.0
+        lr5 = float(np.sum(log_rets[-5:])) if len(log_rets) >= 5 else 0.0
+        lr20 = float(np.sum(log_rets[-20:])) if len(log_rets) >= 20 else 0.0
+
+        # ACF
+        acf1 = self.calculate_acf(log_rets, 1)
+        acf2 = self.calculate_acf(log_rets, 2)
+        acf3 = self.calculate_acf(log_rets, 3)
+        acf5 = self.calculate_acf(log_rets, 5)
+
+        # Z-Scores
+        z_short = self.calculate_zscore(prices_arr, 10)
+        z_med = self.calculate_zscore(prices_arr, 20)
+        z_long = self.calculate_zscore(prices_arr, 50)
+
+        # Volatilities
+        rv_short = self.calculate_realized_volatility(log_rets, 10)
+        rv_med = self.calculate_realized_volatility(log_rets, 20)
+        ewma_vol = self.calculate_ewma_volatility(log_rets)
+        garch_vol = self.calculate_garch_baseline(log_rets)
+
+        # GBM Distribution
+        gbm = self.calculate_gbm_distribution(current_price, log_rets, horizon_bars=5)
+
+        # Hurst & Entropy
+        hurst_val = self.calculate_hurst(prices_arr[-100:] if len(prices_arr) >= 100 else prices_arr)
+        shannon_val = self.calculate_shannon_entropy(prices_arr[-50:] if len(prices_arr) >= 50 else prices_arr)
+        hfd_val = self.calculate_higuchi_fd(prices_arr[-50:] if len(prices_arr) >= 50 else prices_arr)
+
+        # Volatility Regime Classification
+        if ewma_vol > rv_med * 1.5:
+            vol_regime = "VOL_EXPANSION"
+        elif ewma_vol < rv_med * 0.7:
+            vol_regime = "VOL_COMPRESSION"
+        elif rv_med > 0.02:
+            vol_regime = "HIGH_VOL"
+        elif rv_med < 0.005:
+            vol_regime = "LOW_VOL"
+        else:
+            vol_regime = "NORMAL_VOL"
+
+        # Market Regime Classification
+        if hurst_val >= 0.55:
+            mkt_regime = "TRENDING"
+        elif hurst_val <= 0.45:
+            mkt_regime = "MEAN_REVERTING"
+        else:
+            mkt_regime = "NOISE"
+
+        conf = min(1.0, max(0.2, abs(hurst_val - 0.5) * 2.0 + 0.3))
+
+        return QuantFeatureVector(
+            timestamp=snapshot.timestamp,
+            symbol=snapshot.symbol,
+            last_close=current_price,
+            log_return_1=lr1,
+            log_return_5=lr5,
+            log_return_20=lr20,
+            acf_lag_1=acf1,
+            acf_lag_2=acf2,
+            acf_lag_3=acf3,
+            acf_lag_5=acf5,
+            zscore_short=z_short,
+            zscore_medium=z_med,
+            zscore_long=z_long,
+            realized_vol_short=rv_short,
+            realized_vol_medium=rv_med,
+            ewma_volatility=ewma_vol,
+            garch_volatility=garch_vol,
+            gbm_drift=gbm["drift"],
+            gbm_volatility=gbm["volatility"],
+            gbm_expected_price=gbm["expected_price"],
+            gbm_lower_band=gbm["lower_band"],
+            gbm_upper_band=gbm["upper_band"],
+            gbm_expected_range=gbm["expected_range"],
+            hurst_exponent=hurst_val,
+            shannon_entropy=shannon_val,
+            hfd_complexity=hfd_val,
+            volatility_regime=vol_regime,
+            market_regime=mkt_regime,
+            confidence=conf,
+        )

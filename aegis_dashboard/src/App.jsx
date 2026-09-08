@@ -1,5 +1,5 @@
 /**
- * AEGIS GOLD — SCALPING MODE � 50% CONFIDENCE
+ * AEGIS GOLD  -  SCALPING MODE  -  50% CONFIDENCE
  * Local AI Engine Dashboard v6.0 ULTRA
  * No external AI dependencies. Fully local intelligence.
  */
@@ -70,7 +70,7 @@ function StatusBadge({ status, online }) {
     STOPPED:       <Badge variant="red">■ STOPPED</Badge>,
     LOCKED:        <Badge variant="red">🔒 LOCKED</Badge>,
     'MARKET CLOSED':<Badge variant="neutral">⏳ CLOSED</Badge>,
-    STARTING:      <Badge variant="blue">◌ STARTING</Badge>,
+    STARTING:      <Badge variant="blue"> -  -  -  STARTING</Badge>,
   };
   return map[status] ?? <Badge variant="blue">{status}</Badge>;
 }
@@ -240,7 +240,7 @@ function TradePanel({ st, trades }) {
 }
 
 /* ═══════════════════════════════════════════════
-   LIVE CONFIDENCE GAUGE — animated bar
+   LIVE CONFIDENCE GAUGE  -  animated bar
 ═══════════════════════════════════════════════ */
 function LiveGaugeBar({ label, value = 0, color = '#f59e0b' }) {
   const pct = Math.max(0, Math.min(100, value));
@@ -292,7 +292,7 @@ function EURUSDPanel({ aiState }) {
               {conf}% CONFIDENCE
             </div>
             <div style={{ color: '#94a3b8', fontSize: 10 }}>
-              {action === 'TRADE' ? `✅ TRADE ${direction}` : `⏳ WAITING — need 60%+`}
+              {action === 'TRADE' ? `✅ TRADE ${direction}` : `⏳ WAITING  -  need 60%+`}
             </div>
           </div>
           {/* Live pulse dot */}
@@ -353,7 +353,7 @@ function XAUUSDPanel({ aiState }) {
               {conf}% CONFIDENCE
             </div>
             <div style={{ color: '#94a3b8', fontSize: 10 }}>
-              {action === 'TRADE' ? `✅ TRADE ${direction}` : `⏳ WAITING — need 60%+`}
+              {action === 'TRADE' ? `✅ TRADE ${direction}` : `⏳ WAITING  -  need 60%+`}
             </div>
           </div>
           {/* Live pulse dot */}
@@ -385,7 +385,7 @@ function XAUUSDPanel({ aiState }) {
 }
 
 /* ═══════════════════════════════════════════════
-   LIVE PRICE CHART — Per Symbol
+   LIVE PRICE CHART  -  Per Symbol
 ═══════════════════════════════════════════════ */
 function SymbolChart({ symbol, color = '#f59e0b', aiState }) {
   const [priceData, priceErr] = useApi(`/price/${symbol}`, 500);
@@ -452,7 +452,7 @@ function SymbolChart({ symbol, color = '#f59e0b', aiState }) {
 function Journal({ trades }) {
   const earned = trades.filter(t => t.win).reduce((s, t) => s + (t.pnl ?? 0), 0);
   return (
-    <Card title="TRADE JOURNAL — TODAY"
+    <Card title="TRADE JOURNAL  -  TODAY"
       icon={BookOpen} iconColor="blue"
       right={<span className="text-sub" style={{ fontSize: 10 }}>{trades.length} trades | <PnL value={earned} /></span>}
     >
@@ -473,7 +473,7 @@ function Journal({ trades }) {
                 <td className="text-sub mono">{t.time}</td>
                 <td className={t.dir === 'BUY' ? 'text-green fw-bold' : 'text-red fw-bold'}>{t.dir}</td>
                 <td className="mono">{t.entry?.toFixed(2)}</td>
-                <td className="mono">{t.exit?.toFixed(2) || '—'}</td>
+                <td className="mono">{t.exit?.toFixed(2) || ' - '}</td>
                 <td className={cx('mono', t.pts > 0 ? 'text-green' : 'text-red')}>
                   {t.pts > 0 ? '+' : ''}{t.pts?.toFixed(1)}
                 </td>
@@ -502,7 +502,7 @@ function Controls({ st, online }) {
   const [msg, setMsg] = useState('');
   const send = useCallback(async (cmd) => {
     const ok = await postCmd(cmd);
-    setMsg(ok ? `✓ ${cmd}` : '✗ Command failed');
+    setMsg(ok ? `✓ ${cmd}` : ' -  -  Command failed');
     setTimeout(() => setMsg(''), 3000);
   }, []);
 
@@ -532,7 +532,7 @@ function Controls({ st, online }) {
       {st?.consecutive_losses >= 3 && (
         <div className="warn-row">
           <AlertTriangle size={12} />
-          {st.consecutive_losses} consecutive losses — caution mode
+          {st.consecutive_losses} consecutive losses  -  caution mode
         </div>
       )}
       {msg && <div className="ctrl-msg">{msg}</div>}
@@ -554,7 +554,7 @@ function LogPanel({ trades, st }) {
         time: t.time,
       });
     });
-    if (st.status === 'ACTIVE') out.push({ type: 'info', msg: 'Engine running — scanning market', time: 'now' });
+    if (st.status === 'ACTIVE') out.push({ type: 'info', msg: 'Engine running  -  scanning market', time: 'now' });
     if (st.status === 'PAUSED') out.push({ type: 'warn', msg: 'Trading paused by operator', time: 'now' });
     if (st.consecutive_losses >= 3) out.push({ type: 'warn', msg: `${st.consecutive_losses} consecutive losses`, time: 'now' });
     return out;
@@ -684,7 +684,7 @@ export default function App() {
 
       {/* ─── FOOTER ──────────────────────────────── */}
       <footer className="ftr">
-        <span>AEGIS GOLD v6.0 ULTRA — SCALPING MODE � 50% CONFIDENCE</span>
+        <span>AEGIS GOLD v6.0 ULTRA  -  SCALPING MODE  -  50% CONFIDENCE</span>
         <span>LOCAL AI | EURUSD + XAUUSD | SCALPING | LATENCY {(st.latency ?? 0).toFixed(0)}ms</span>
       </footer>
 

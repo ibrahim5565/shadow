@@ -26,6 +26,13 @@ import time
 import signal
 from datetime import datetime, timezone
 
+# ── Force HuggingFace Offline Mode ─────────────────────────────────────────
+# Prevents Kronos/Transformers from making network calls to huggingface.co
+# The bot always operates in local statistical fallback mode — no cloud needed
+os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+os.environ.setdefault("HUGGINGFACE_HUB_VERBOSITY", "error")
+
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -52,8 +59,26 @@ console_handler = logging.StreamHandler(sys.stdout)
 console_handler.setFormatter(formatter)
 root_logger.addHandler(console_handler)
 
-# File handler — delay=True prevents rotation lock on Windows
-file_handler = logging.handlers.RotatingFileHandler(
+class SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """Windows-safe RotatingFileHandler that never crashes on file-lock errors."""
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except (PermissionError, OSError):
+            pass  # Windows file lock during rotation — silently skip
+
+    def emit(self, record):
+        try:
+            if self.shouldRollover(record):
+                self.doRollover()
+            logging.FileHandler.emit(self, record)
+        except (PermissionError, OSError):
+            pass  # File locked by another process — skip this log record
+        except Exception:
+            self.handleError(record)
+
+# File handler — SafeRotatingFileHandler prevents rotation lock crash on Windows
+file_handler = SafeRotatingFileHandler(
     os.path.join(log_dir, "aegis.log"),
     maxBytes=10*1024*1024,
     backupCount=3,
@@ -148,13 +173,26 @@ def check_environment():
         logger.error("❌ psutil module not found. Install: pip install psutil")
         checks_passed = False
     
+    # Check 10 sub-engine self-diagnostics
+    try:
+        from brain.diagnostics import SystemDiagnostics
+        diag = SystemDiagnostics()
+        health = diag.get_overall_health()
+        if health == "CRITICAL":
+            logger.error("[DIAGNOSTICS] System Diagnostics returned CRITICAL status!")
+            checks_passed = False
+        else:
+            logger.info("[OK] System Diagnostics passed (Health: %s)", health)
+    except Exception as diag_err:
+        logger.warning("[DIAGNOSTICS] Self-diagnostics check warning: %s", diag_err)
+
     logger.info("="*70)
     
     if not checks_passed:
         logger.critical("STARTUP CHECKS FAILED - System cannot start")
         return False
     
-    logger.info("✅ ALL STARTUP CHECKS PASSED")
+    logger.info("[OK] ALL STARTUP CHECKS PASSED")
     return True
 
 # ══════════════════════════════════════════════════════════════

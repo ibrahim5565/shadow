@@ -110,6 +110,20 @@ def _init_explain_db():
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_id ON explanations(trade_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON explanations(timestamp)")
+        
+        expected_cols = {
+            "outcome": "TEXT DEFAULT NULL",
+            "outcome_pnl": "REAL DEFAULT NULL",
+            "attribution_json": "TEXT DEFAULT NULL"
+        }
+        cursor = conn.cursor()
+        existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(explanations)").fetchall()}
+        for col_name, col_def in expected_cols.items():
+            if col_name not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE explanations ADD COLUMN {col_name} {col_def}")
+                except sqlite3.OperationalError:
+                    pass
         conn.commit()
     finally:
         conn.close()
@@ -263,6 +277,13 @@ def build_explanation(
     except Exception:
         pass
 
+    # Populates SHAP attributions from EngineVote reasoning strings if SHAP not provided
+    if not shap_values and signal_sources:
+        shap_values = {
+            f"engine_{k}": (v.get("reasoning") if isinstance(v, dict) else str(v))
+            for k, v in signal_sources.items()
+        }
+
     explanation = {
         "trade_id": trade_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -284,6 +305,7 @@ def build_explanation(
     }
 
     return explanation
+
 
 
 

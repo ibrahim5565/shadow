@@ -101,15 +101,27 @@ def analyze_regime(candles, symbol: str = "EURUSD", point: float = 0.00001) -> R
             reason="Not enough data", swing_high=0.0, swing_low=0.0, ema_slope=0.0
         )
         
-    # Standardize data access depending on how MT5 returns it (dict/tuple or nametuple)
-    try:
-        closes = [float(c['close']) for c in candles]
-        highs = [float(c['high']) for c in candles]
-        lows = [float(c['low']) for c in candles]
-    except TypeError:
-        closes = [float(c[4]) for c in candles]
-        highs = [float(c[2]) for c in candles]
-        lows = [float(c[3]) for c in candles]
+    # Standardize data access depending on how candles are passed (DataFrame/dict/tuple)
+    if hasattr(candles, 'iloc') and hasattr(candles, 'columns'):
+        # Pandas DataFrame (from MT5 copy_rates_from_pos via shadow_run / brain.py)
+        closes = candles['close'].values.astype(float).tolist()
+        highs  = candles['high'].values.astype(float).tolist()
+        lows   = candles['low'].values.astype(float).tolist()
+    elif hasattr(candles, 'dtype') and hasattr(candles.dtype, 'names') and candles.dtype.names:
+        # NumPy structured array (direct MT5 copy_rates output)
+        closes = candles['close'].astype(float).tolist()
+        highs  = candles['high'].astype(float).tolist()
+        lows   = candles['low'].astype(float).tolist()
+    else:
+        try:
+            closes = [float(c['close']) for c in candles]
+            highs  = [float(c['high'])  for c in candles]
+            lows   = [float(c['low'])   for c in candles]
+        except (TypeError, KeyError):
+            closes = [float(c[4]) for c in candles]
+            highs  = [float(c[2]) for c in candles]
+            lows   = [float(c[3]) for c in candles]
+
         
     # Calculate indicators
     ema_fast = EMA(closes, cfg.EMA_FAST_PERIOD)      # default 8
@@ -155,19 +167,23 @@ def analyze_regime(candles, symbol: str = "EURUSD", point: float = 0.00001) -> R
     regime_type = ""
     reason = ""
     
-    # Regime Decision Table (Mandatory ADX > 22)
+    # Regime Decision Logic (Multi-Factor - ADX is not a requirement)
+    # No single indicator forces a regime classification
     if volatility_ratio > max_volatility_ratio:
         regime_type = "VOLATILE"
         reason = f"Abnormal volatility (ratio={volatility_ratio:.2f}) — likely news"
-    elif not ema_aligned or abs(ema_slope_val) < 15.0 or current_adx < 22.0:
+    # Multiple weak signals suggest ranging
+    elif not ema_aligned and abs(ema_slope_val) < 10.0 and current_adx < 20.0:
         regime_type = "RANGING"
-        reason = f"Ranging: EMAs crossing/flat ({ema_slope_val:.1f}°) or low ADX ({current_adx:.1f} < 22)"
-    elif current_adx > 25 and ema_aligned:
+        reason = f"Multiple ranging signals: EMAs crossed, flat slope ({ema_slope_val:.1f}°), weak ADX ({current_adx:.1f})"
+    # Strong trending signals (ADX is supporting evidence, not requirement)
+    elif ema_aligned and (current_adx > 25 or abs(ema_slope_val) > 30):
         regime_type = trend
-        reason = f"Strong trend aligned ({ema_slope_val:.1f}°)"
+        reason = f"Trending: EMA aligned, ADX={current_adx:.1f}, slope={ema_slope_val:.1f}°"
+    # Moderate signals - prefer structure-based classification
     else:
-        regime_type = "WEAK_TREND"
-        reason = f"Weak trend detected ({ema_slope_val:.1f}°)"
+        regime_type = trend if ema_aligned else "RANGING"
+        reason = f"Moderate regime: EMA={'aligned' if ema_aligned else 'mixed'}, ADX={current_adx:.1f}, slope={ema_slope_val:.1f}°"
         
     # Regime Confidence Score
     score = 0
@@ -244,3 +260,25 @@ def _soft_regime_confidence(adx: float, ema_aligned: bool,
         return round(math.exp(log_sum), 4)
     except Exception:
         return round(sum(w * p for w, p in zip(weights, probs)), 4)
+
+
+def get_pattern_regime_bias(candles_m5, candles_h1=None, symbol: str = "XAUUSD", point: float = 0.01) -> dict:
+    """
+    Exposes current Big Pattern bias and market regime to the pattern engine.
+    Uses detect_big_pattern under the hood and combines it with analyze_regime.
+    """
+    from brain.smc_engine import detect_big_pattern
+    regime = analyze_regime(candles_m5, symbol=symbol, point=point)
+    big_pat = detect_big_pattern(symbol=symbol, candles_m5=candles_m5, candles_h1=candles_h1, point=point)
+
+    return {
+        "regime_type": regime.type,
+        "trend": regime.trend,
+        "adx": regime.adx,
+        "big_pattern_bias": big_pat.bias,
+        "big_pattern_type": big_pat.pattern_type,
+        "big_pattern_conf": big_pat.confidence,
+        "invalidation_level": big_pat.invalidation_level,
+        "details": big_pat.details,
+    }
+

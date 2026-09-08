@@ -159,6 +159,35 @@ class KronosBrain:
         self.tokenizer = KronosTokenizer()
         logger.info(f"[KRONOS BRAIN] Initialized on device={self.device} (Model: {model_name})")
 
+    def save_checkpoint(self, filepath: str) -> None:
+        """Saves model weights state dict to file."""
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+        torch.save({
+            "model_state_dict": self.model.state_dict(),
+            "model_name": self.model_name,
+            "d_model": self.model.d_model,
+        }, filepath)
+        logger.info(f"[KRONOS BRAIN] Checkpoint saved successfully to {filepath}")
+
+    def load_checkpoint(self, filepath: str) -> bool:
+        """Loads model weights state dict from file."""
+        if not os.path.exists(filepath):
+            logger.warning(f"[KRONOS BRAIN] Checkpoint file not found: {filepath}")
+            return False
+        try:
+            checkpoint = torch.load(filepath, map_location=self.device)
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                self.model.load_state_dict(checkpoint["model_state_dict"])
+            else:
+                self.model.load_state_dict(checkpoint)
+            self.model.eval()
+            logger.info(f"[KRONOS BRAIN] Successfully loaded checkpoint from {filepath}")
+            return True
+        except Exception as e:
+            logger.error(f"[KRONOS BRAIN] Failed to load checkpoint from {filepath}: {e}")
+            return False
+
+
     def _calculate_rank_ic(self, predicted_returns: np.ndarray, actual_returns: np.ndarray) -> float:
         """Calculates Spearman Rank Information Coefficient (RankIC)."""
         if len(predicted_returns) < 5 or len(actual_returns) < 5:
@@ -189,9 +218,9 @@ class KronosBrain:
         coarse_tok, fine_tok = self.tokenizer.encode(window.normalized_tensor)
 
         # 2. Convert to PyTorch Tensors
-        feat_tensor = torch.from_numpy(window.normalized_tensor).unsqueeze(0).to(self.device)
-        c_tensor = torch.from_numpy(coarse_tok).unsqueeze(0).to(self.device)
-        f_tensor = torch.from_numpy(fine_tok).unsqueeze(0).to(self.device)
+        feat_tensor = torch.from_numpy(window.normalized_tensor).float().unsqueeze(0).to(self.device)
+        c_tensor = torch.from_numpy(coarse_tok).long().unsqueeze(0).to(self.device)
+        f_tensor = torch.from_numpy(fine_tok).long().unsqueeze(0).to(self.device)
 
         # 3. Model Forward Pass
         with torch.no_grad():

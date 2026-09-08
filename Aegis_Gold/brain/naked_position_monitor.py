@@ -52,13 +52,13 @@ def check_and_protect_open_positions(gateway=None, telegram=None) -> List[Dict[s
                     emergency_sl = round(entry_price + (default_floor_pts * point), digits)
 
                 msg = (
-                    f"🚨 [EMERGENCY NAKED POSITION DETECTED] Ticket #{ticket} ({symbol} {direction} {volume} lot @ {entry_price}) "
+                    f"[ALERT] [EMERGENCY NAKED POSITION DETECTED] Ticket #{ticket} ({symbol} {direction} {volume} lot @ {entry_price}) "
                     f"has NO SL ON BROKER (sl=0.0)! Attaching emergency SL at {emergency_sl} ({default_floor_pts}pts)..."
                 )
                 logger.critical(msg)
                 if telegram:
                     try:
-                        telegram.send(f"🚨 <b>[EMERGENCY NAKED POSITION]</b> Ticket #{ticket} ({symbol} {direction}) sl=0.0! Attaching hard SL @ {emergency_sl}...")
+                        telegram.send(f"[ALERT] <b>[EMERGENCY NAKED POSITION]</b> Ticket #{ticket} ({symbol} {direction}) sl=0.0! Attaching hard SL @ {emergency_sl}...")
                     except Exception:
                         pass
 
@@ -73,7 +73,7 @@ def check_and_protect_open_positions(gateway=None, telegram=None) -> List[Dict[s
                 res = mt5.order_send(sltp_req)
 
                 if res and res.retcode == mt5.TRADE_RETCODE_DONE:
-                    logger.info(f"✅ [EMERGENCY SL ATTACHED] Ticket #{ticket} attached hard SL at {emergency_sl}.")
+                    logger.info(f"[OK] [EMERGENCY SL ATTACHED] Ticket #{ticket} attached hard SL at {emergency_sl}.")
                     if telegram:
                         try:
                             telegram.send(f"✅ <b>[EMERGENCY SL ATTACHED]</b> Ticket #{ticket} hard SL attached at {emergency_sl}.")
@@ -81,7 +81,7 @@ def check_and_protect_open_positions(gateway=None, telegram=None) -> List[Dict[s
                             pass
                 else:
                     err = res.comment if res else mt5.last_error()
-                    logger.error(f"❌ [EMERGENCY SL FAILED] Could not attach SL to #{ticket}: {err}. MARKET CLOSING NAKED POSITION FOR SAFETY...")
+                    logger.error(f"[ERR] [EMERGENCY SL FAILED] Could not attach SL to #{ticket}: {err}. MARKET CLOSING NAKED POSITION FOR SAFETY...")
                     # Emergency market close
                     close_tick = mt5.symbol_info_tick(symbol)
                     close_price = close_tick.bid if direction == "BUY" else close_tick.ask
@@ -98,9 +98,9 @@ def check_and_protect_open_positions(gateway=None, telegram=None) -> List[Dict[s
                     }
                     res_close = mt5.order_send(close_req)
                     if res_close and res_close.retcode == mt5.TRADE_RETCODE_DONE:
-                        logger.info(f"🛑 [EMERGENCY FLATTEN DONE] Ticket #{ticket} closed successfully.")
+                        logger.info(f"[STOP] [EMERGENCY FLATTEN DONE] Ticket #{ticket} closed successfully.")
                     else:
-                        logger.critical(f"☠️ [CRITICAL FAIL] Could not market close naked position #{ticket}!")
+                        logger.critical(f"?? [CRITICAL FAIL] Could not market close naked position #{ticket}!")
 
                 naked_found.append({
                     "ticket": ticket,

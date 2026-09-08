@@ -106,88 +106,68 @@ class ProfitFactor100Trainer:
                 import types
                 
                 def patched_train_on_history(self, trade_memory_db, epochs=100, lr=0.003):
-                    """Patched version with PF 100% parameters."""
-                    PF_TARGET = 2.0          # 100% profit factor
-                    PF_REG_WEIGHT = 0.50     # Aggressive regularisation
-                    
+                    """Intensive mode: more epochs, higher LR, realized R:R objective."""
                     self.populate_replay_buffer(trade_memory_db)
                     if self.replay_buffer.size() < 20:
                         logger.warning(f"Not enough trades in replay buffer: {self.replay_buffer.size()}/20")
                         return {"status": "insufficient_data"}
-                    
-                    # Extract states, actions, rewards
-                    states = [item["state"] for item in self.replay_buffer.buffer]
-                    actions = [item["action"] for item in self.replay_buffer.buffer]
-                    rewards = [item["reward"] for item in self.replay_buffer.buffer]
-                    
-                    # Convert to PyTorch tensors
-                    states_tensor = torch.tensor(states, dtype=torch.float32).to(self.device)
-                    actions_tensor = torch.tensor(actions, dtype=torch.long).to(self.device)
-                    rewards_tensor = torch.tensor(rewards, dtype=torch.float32).to(self.device)
-                    
-                    # Pre-compute current PF
-                    gross_profits = sum(r for r in rewards if r > 0.0)
-                    gross_losses  = abs(sum(r for r in rewards if r < 0.0))
-                    current_pf    = gross_profits / gross_losses if gross_losses > 0.0 else 1.0
-                    logger.info(f"[RL-PF100] Replay buffer PF before training: {current_pf:.3f} (target: {PF_TARGET})")
-                    
-                    # Loss and Optimizer
+
+                    # Extract states, actions, rewards, uncertainty flags
+                    states         = [item["state"]   for item in self.replay_buffer.buffer]
+                    actions        = [item["action"]  for item in self.replay_buffer.buffer]
+                    rewards        = [item["reward"]  for item in self.replay_buffer.buffer]
+                    uncertain_mask = [item.get("uncertain_risk", False) for item in self.replay_buffer.buffer]
+                    sample_weights = [0.5 if u else 1.0 for u in uncertain_mask]
+                    n_real   = sum(1 for u in uncertain_mask if not u)
+                    n_uncert = sum(1 for u in uncertain_mask if u)
+
+                    # Convert to tensors
+                    states_tensor   = torch.tensor(states,         dtype=torch.float32).to(self.device)
+                    actions_tensor  = torch.tensor(actions,        dtype=torch.long).to(self.device)
+                    rewards_tensor  = torch.tensor(rewards,        dtype=torch.float32).to(self.device)
+                    weights_tensor  = torch.tensor(sample_weights, dtype=torch.float32).to(self.device)
+
+                    # Log composition
+                    real_rewards = [r for r, u in zip(rewards, uncertain_mask) if not u]
+                    real_gp = sum(r for r in real_rewards if r > 0)
+                    real_gl = abs(sum(r for r in real_rewards if r < 0))
+                    logger.info(f"[RL-INTENSIVE] {len(states)} trades | real-risk: {n_real} | uncertain: {n_uncert}")
+                    if real_gl > 0:
+                        logger.info(f"[RL-INTENSIVE] Real-risk R:R proxy: {real_gp/real_gl:.3f}")
+
+                    # Training -- pure weighted MSE, no implied-PF term
                     self.model.train()
                     optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-                    criterion = torch.nn.MSELoss()
-                    
-                    logger.info(f"[RL-PF100] Training Q-Network on {len(states)} samples for {epochs} epochs...")
-                    logger.info(f"[RL-PF100] AGGRESSIVE MODE: PF Target={PF_TARGET}, Reg Weight={PF_REG_WEIGHT}")
-                    
+                    criterion = torch.nn.MSELoss(reduction='none')
+
+                    logger.info(f"[RL-INTENSIVE] Training {len(states)} samples for {epochs} epochs (realized R:R, no PF term)...")
+
                     last_loss = 0.0
-                    last_implied_pf = 0.0
-                    
                     for epoch in range(epochs):
                         optimizer.zero_grad()
-                        q_values = self.model(states_tensor)
-                        
-                        # Get Q-value for the action that was actually taken
+                        q_values   = self.model(states_tensor)
                         gathered_q = q_values.gather(1, actions_tensor.unsqueeze(1)).squeeze(1)
-                        
-                        # Base TD loss
-                        td_loss = criterion(gathered_q, rewards_tensor)
-                        
-                        # Profit-Factor Regularisation (AGGRESSIVE)
-                        pos_q = torch.relu(gathered_q)
-                        neg_q = torch.relu(-gathered_q)
-                        implied_gross_profit = pos_q.sum() + 1e-8
-                        implied_gross_loss   = neg_q.sum()  + 1e-8
-                        implied_pf           = implied_gross_profit / implied_gross_loss
-                        pf_penalty = torch.relu(
-                            torch.tensor(PF_TARGET, dtype=torch.float32).to(self.device) - implied_pf
-                        )
-                        
-                        loss = td_loss + PF_REG_WEIGHT * pf_penalty
+
+                        per_sample_loss = criterion(gathered_q, rewards_tensor)
+                        loss = (per_sample_loss * weights_tensor).mean()
+
                         loss.backward()
                         optimizer.step()
-                        
+
                         last_loss = loss.item()
-                        last_implied_pf = implied_pf.item()
-                        
                         if (epoch + 1) % 20 == 0:
                             logger.info(
-                                f"  Epoch {epoch+1}/{epochs} | "
-                                f"TD Loss: {td_loss.item():.4f} | "
-                                f"PF Penalty: {pf_penalty.item():.4f} | "
-                                f"Implied PF: {last_implied_pf:.3f}"
+                                f"  Epoch {epoch+1}/{epochs} | Weighted Loss: {last_loss:.4f}"
                             )
-                    
-                    # Save model weights
+
+                    # Save challenger weights
                     os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
                     torch.save(self.model.state_dict(), self.model_path)
                     self.model.eval()
-                    
-                    logger.info(
-                        f"[OK] RL-PF100 training complete | "
-                        f"Final Loss: {last_loss:.4f} | "
-                        f"Implied PF: {last_implied_pf:.3f}"
-                    )
-                    return {"status": "success", "loss": last_loss, "samples": len(states), "implied_pf": last_implied_pf}
+
+                    logger.info(f"[OK] RL-INTENSIVE complete | Final Loss: {last_loss:.4f} | real-risk trades: {n_real}")
+                    return {"status": "success", "loss": last_loss, "samples": len(states),
+                            "real_risk_trades": n_real, "uncertain_risk_trades": n_uncert}
                 
                 # Bind the patched method
                 return patched_train_on_history(rl_agent, trade_memory_db, epochs, lr)

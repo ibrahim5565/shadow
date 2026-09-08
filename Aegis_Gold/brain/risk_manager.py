@@ -8,9 +8,15 @@ from modules.risk_manager import RiskManager as CoreRiskManager
 logger = logging.getLogger("aegis.omega.risk")
 
 class OMEGARiskManager:
-    def __init__(self, gateway):
-        self.core_risk = CoreRiskManager(gateway)
+    def __init__(self, gateway=None):
+        self.gateway = gateway
+        self.core_risk = CoreRiskManager(gateway) if gateway is not None else None
         logger.info("Local OMEGA Risk Manager wrapper initialized.")
+
+    def set_gateway(self, gateway):
+        self.gateway = gateway
+        if self.core_risk is None:
+            self.core_risk = CoreRiskManager(gateway)
 
     def evaluate(self, account_info: dict, session: str, current_spread: float, symbol_config: dict) -> dict:
         """
@@ -19,8 +25,11 @@ class OMEGARiskManager:
         reasons = []
         approved = True
 
+        if self.core_risk is None and account_info:
+            return {"approved": True, "consecutive_losses": 0, "reason": "Risk cleared (gateway lazy-bound)"}
+
         # Ensure core risk starts daily state
-        if self.core_risk.start_equity <= 0 and account_info:
+        if self.core_risk and self.core_risk.start_equity <= 0 and account_info:
             self.core_risk.init_daily(account_info.get("equity", 10000.0))
 
         # Check consecutive losses

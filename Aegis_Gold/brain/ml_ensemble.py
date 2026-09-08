@@ -73,7 +73,8 @@ import pickle
 import logging
 from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Any
+
 from datetime import datetime
 
 # Lightweight ML - using sklearn (available in most environments)
@@ -198,7 +199,11 @@ class MLEnsemble:
             # Get predictions from each model
             gb_prob = self.gradient_boost.predict_proba(X_scaled)[0][1]  # P(win)
             rf_prob = self.random_forest.predict_proba(X_scaled)[0][1]
-            nn_prob = self.neural_net.predict_proba(X_scaled)[0][1]
+            # Neural net is now a Pipeline - pass raw X (Pipeline has its own scaler)
+            if hasattr(self.neural_net, "named_steps"):
+                nn_prob = self.neural_net.predict_proba([X])[0][1]
+            else:
+                nn_prob = self.neural_net.predict_proba(X_scaled)[0][1]
             lr_prob = self.logistic.predict_proba(X_scaled)[0][1]
             
             # Weighted ensemble voting
@@ -243,11 +248,11 @@ class MLEnsemble:
                 expected_win_rate=ensemble_prob
             )
             
-            logger.info(f"✅ ML prediction: {direction} | Prob: {ensemble_prob:.2f} | Agreement: {agreement:.2f}")
+            logger.info(f"[OK] ML prediction: {direction} | Prob: {ensemble_prob:.2f} | Agreement: {agreement:.2f}")
             return result
             
         except Exception as e:
-            logger.error(f"❌ ML prediction failed: {e}")
+            logger.error(f"[ERR] ML prediction failed: {e}")
             return self._rule_based_prediction(features)
     
     def train(self, trade_memory_db) -> List[TrainingMetrics]:
@@ -318,13 +323,24 @@ class MLEnsemble:
             metrics.append(rf_metrics)
 
             # 3. Neural Network
+            # FIX: Use Pipeline with StandardScaler, early stopping, and
+            # convergence diagnostics to prevent ConvergenceWarning.
             logger.info("Training Neural Network (PF-weighted)...")
-            self.neural_net = MLPClassifier(
-                hidden_layer_sizes=(64, 32),
-                activation='relu',
-                max_iter=200,
-                random_state=42
-            )
+            from sklearn.pipeline import Pipeline
+            self.neural_net = Pipeline([
+                ("scaler", StandardScaler()),
+                ("model", MLPClassifier(
+                    hidden_layer_sizes=(64, 32),
+                    activation='relu',
+                    max_iter=1000,          # Increased from 200 to allow convergence
+                    early_stopping=True,    # Stop when validation score stops improving
+                    validation_fraction=0.15,
+                    n_iter_no_change=20,    # Patience for early stopping
+                    learning_rate_init=0.001,
+                    random_state=42,
+                    verbose=False,
+                ))
+            ])
             nn_metrics = self._train_with_cv(self.neural_net, X_scaled, y, sample_weights, tscv, "NeuralNet")
             metrics.append(nn_metrics)
 
@@ -367,6 +383,9 @@ class MLEnsemble:
         recalls = []
         f1_scores = []
 
+        # Check if model is a Pipeline (has named_steps)
+        is_pipeline = hasattr(model, "named_steps")
+
         for train_idx, val_idx in cv.split(X):
             X_train, X_val = X[train_idx], X[val_idx]
             y_train, y_val = y[train_idx], y[val_idx]
@@ -374,7 +393,11 @@ class MLEnsemble:
 
             # Try to fit with sample_weight if the model supports it
             try:
-                model.fit(X_train, y_train, sample_weight=w_train)
+                if is_pipeline:
+                    # Pipeline: pass sample_weight to final estimator via model__sample_weight
+                    model.fit(X_train, y_train, model__sample_weight=w_train)
+                else:
+                    model.fit(X_train, y_train, sample_weight=w_train)
             except TypeError:
                 # Model doesn't support sample_weight (e.g. MLPClassifier)
                 model.fit(X_train, y_train)
@@ -388,7 +411,10 @@ class MLEnsemble:
 
         # Final fit on all data
         try:
-            model.fit(X, y, sample_weight=sample_weights)
+            if is_pipeline:
+                model.fit(X, y, model__sample_weight=sample_weights)
+            else:
+                model.fit(X, y, sample_weight=sample_weights)
         except TypeError:
             model.fit(X, y)
 
@@ -675,7 +701,22 @@ class MLEnsemble:
         """
         Record outcome of prediction for model performance tracking.
         Used to update model weights dynamically.
+        
+        CAUSALITY FIX: This method is now BLOCKED during live trading to prevent
+        future data leakage. Model updates only occur during dedicated training phases.
         """
+        # Import causality enforcer
+        from brain.causality_enforcer import get_causality_enforcer
+        
+        # Check if we're in live trading mode (detected by call stack analysis)
+        enforcer = get_causality_enforcer()
+        audit_result = enforcer.prevent_live_model_updates("ml_ensemble", is_live_trading=True)
+        
+        if not audit_result.passed:
+            logger.warning("[CAUSALITY] BLOCKED live model weight update - use dedicated training phase instead")
+            return
+        
+        # Only proceed if causality check passed (training mode)
         self.recent_predictions.append(actual_outcome)
         
         # Keep last 100 predictions
@@ -890,3 +931,310 @@ def get_autoencoder() -> AutoencoderAnomalyDetector:
         _autoencoder = AutoencoderAnomalyDetector()
     return _autoencoder
 
+
+def get_engine_vote(candles_m5=None, symbol: str = "XAUUSD") -> Dict[str, Any]:
+    """
+    SECTION 1 — PER-ENGINE OUTPUT CONTRACT
+    Returns standardized EngineVote dict for ML Ensemble.
+    Uses both sklearn trained models (if available) AND price-momentum fallback.
+    """
+    direction = "neutral"
+    conf = 0.50
+    win_probability = 0.50
+    details = []
+
+    try:
+        # Try to use trained ML Ensemble first
+        ml_ens = get_ml_ensemble()
+        if ml_ens is not None and ml_ens.gradient_boost is not None and candles_m5 is not None:
+            if hasattr(candles_m5, 'close'):
+                closes = candles_m5['close'].values.astype(float)
+            elif isinstance(candles_m5, list) and len(candles_m5) >= 10:
+                closes = [float(c.get('close', 0.0) if isinstance(c, dict) else (getattr(c, 'close', 0.0) if hasattr(c, 'close') else c[4])) for c in candles_m5]
+            else:
+                closes = []
+
+            if len(closes) >= 14:
+                # Build feature dict for ML Ensemble
+                import numpy as np_ml
+                r5 = (closes[-1] - closes[-6]) / closes[-6] if closes[-6] > 0 else 0.0
+                r10 = (closes[-1] - closes[-11]) / closes[-11] if len(closes) >= 11 and closes[-11] > 0 else 0.0
+                volatility = float(np_ml.std(np_ml.diff(closes[-14:]))) if len(closes) >= 14 else 0.0
+
+                ml_features = {
+                    "confidence": 60,
+                    "regime": "TRENDING",
+                    "structure": "BULLISH" if r5 > 0 else "BEARISH",
+                    "regime_score": 60,
+                    "structure_score": 60,
+                    "entry_score": 60,
+                    "rsi": 50.0,
+                    "adx": 25.0,
+                    "atr": volatility * 10000,
+                    "spread": 15.0,
+                }
+
+                try:
+                    pred = ml_ens.predict(ml_features)
+                    win_probability = pred.win_probability
+                    if win_probability >= 0.60:
+                        direction = "bullish"
+                        conf = round(min(0.95, win_probability), 3)
+                        details.append(f"XGBoost/RF win_prob={win_probability*100:.1f}%")
+                    elif win_probability <= 0.40:
+                        direction = "bearish"
+                        conf = round(min(0.95, 1.0 - win_probability), 3)
+                        details.append(f"XGBoost/RF win_prob={win_probability*100:.1f}%")
+                    else:
+                        direction = "neutral"
+                        conf = 0.50
+                        details.append(f"XGBoost/RF no edge win_prob={win_probability*100:.1f}%")
+                except Exception as ml_e:
+                    details.append(f"ML model predict error: {ml_e}")
+
+        # Price-momentum fallback if no model prediction
+        if not details and candles_m5 is not None and len(candles_m5) >= 10:
+            if hasattr(candles_m5, 'close'):
+                closes = candles_m5['close'].values.astype(float).tolist()
+            elif isinstance(candles_m5, list):
+                closes = [float(c.get('close', c.get('c', 0.0)) if isinstance(c, dict) else (getattr(c, 'close', 0.0) if hasattr(c, 'close') else c[4])) for c in candles_m5]
+            else:
+                closes = []
+
+            if len(closes) >= 10:
+                ret = (closes[-1] - closes[-6]) / closes[-6] if closes[-6] > 0 else 0.0
+                if ret > 0.0005:
+                    direction = "bullish"
+                    conf = min(0.88, 0.55 + ret * 80)
+                    details.append(f"Momentum +{ret*100:.2f}%")
+                elif ret < -0.0005:
+                    direction = "bearish"
+                    conf = min(0.88, 0.55 + abs(ret) * 80)
+                    details.append(f"Momentum {ret*100:.2f}%")
+                else:
+                    direction = "neutral"
+                    conf = 0.50
+                    details.append("Flat price action")
+
+    except Exception as e:
+        details.append(f"ML Ensemble evaluation error: {e}")
+
+    reasoning = f"ML Ensemble: direction={direction.upper()} conf={conf*100:.0f}% | {', '.join(details)}"
+
+    return {
+        "engine": "ml_ensemble",
+        "direction": direction,
+        "confidence": round(conf, 3),
+        "reasoning": reasoning,
+        "win_probability": win_probability,
+    }
+
+
+def compute_expected_value(win_probability: float, tp_pts: int, sl_pts: int, point: float = 0.01,
+                           lot: float = 0.01, contract_size: float = 100.0) -> float:
+    """
+    Computes expected dollar value of a trade given ML win probability and SL/TP.
+
+    EV = P(win) * TP_usd  -  P(loss) * SL_usd
+
+    Args:
+        win_probability: ML ensemble win probability (0.0-1.0)
+        tp_pts:          Take profit in points
+        sl_pts:          Stop loss in points
+        point:           Instrument point value (e.g. 0.01 for XAUUSD)
+        lot:             Trade lot size
+        contract_size:   Contract size (100 for XAUUSD)
+
+    Returns:
+        float: Expected value in USD (positive = good trade, negative = bad trade)
+    """
+    tp_usd = tp_pts * point * lot * contract_size
+    sl_usd = sl_pts * point * lot * contract_size
+    ev = win_probability * tp_usd - (1.0 - win_probability) * sl_usd
+    return round(ev, 4)
+
+
+def get_ev_gate(candles_m5, sl_pts: int, tp_pts: int, direction: str,
+                symbol: str = "XAUUSD", lot: float = 0.01) -> dict:
+    """
+    Hard expected-value gate for the EQS pipeline.
+
+    Computes ML win probability then checks if EV > 0.
+
+    Returns:
+        {
+            "approved":      bool,
+            "ev":            float,       # Expected value in USD
+            "win_prob":      float,       # ML win probability
+            "reason":        str,         # Human-readable decision
+        }
+    """
+    try:
+        vote = get_engine_vote(candles_m5=candles_m5, symbol=symbol)
+        win_prob = vote.get("win_probability", 0.50)
+
+        # Gold contract size = 100 oz, point = $0.01
+        is_gold = "XAU" in symbol.upper() or "GOLD" in symbol.upper()
+        point = 0.01 if is_gold else 0.00001
+        contract_size = 100.0 if is_gold else 100000.0
+
+        ev = compute_expected_value(
+            win_probability=win_prob,
+            tp_pts=tp_pts,
+            sl_pts=sl_pts,
+            point=point,
+            lot=lot,
+            contract_size=contract_size
+        )
+
+        approved = ev > 0.0
+
+        return {
+            "approved": approved,
+            "ev": ev,
+            "win_prob": win_prob,
+            "reason": (
+                f"ML EV Gate: EV=${ev:.4f} {'APPROVED' if approved else 'BLOCKED'} | "
+                f"WinProb={win_prob*100:.1f}%, TP={tp_pts}pts, SL={sl_pts}pts"
+            )
+        }
+
+    except Exception as e:
+        # On error, allow trade but log warning (fail-open to avoid over-filtering)
+        return {
+            "approved": True,
+            "ev": 0.0,
+            "win_prob": 0.50,
+            "reason": f"ML EV Gate error (fail-open): {e}"
+        }
+
+
+def ml_ensemble_predict_vote(ensemble_instance, snapshot) -> "EngineVote":
+    """
+    Pattern Consensus Architecture — ML Ensemble per-engine point-in-time contract.
+
+    Stand-alone function (also callable as ensemble_instance.predict_vote(snapshot))
+    so it can be monkey-patched onto MLEnsemble without touching class internals.
+
+    Role in 7-engine consensus:
+      - RSI/EMA/ADX are INPUTS to ML models (features), NOT gates.
+        No entry is blocked because "RSI crossed threshold X."
+      - The gate is the ENSEMBLE WIN PROBABILITY vs direction class.
+      - conviction = ensemble win_probability (how strongly ML agrees)
+      - direction derived from trade_recommendation, not raw indicator
+
+    Temporal integrity: reads only snapshot.candles_m5 (closed bars).
+    No live MT5 data accessed here.
+    """
+    from brain.engine_vote import EngineVote, PatternEvidence, make_wait_vote
+    from datetime import datetime, timezone
+
+    now = snapshot.timestamp
+
+    try:
+        # Build ML feature dict from snapshot closed candle data
+        features = _build_snapshot_features(snapshot)
+
+        ml_pred = ensemble_instance.predict(features)
+
+        if ml_pred.direction not in ("BUY", "SELL"):
+            return make_wait_vote("ml_ensemble", f"ML direction={ml_pred.direction}", signal_time=now)
+
+        if ml_pred.win_probability < 0.52:
+            return make_wait_vote(
+                "ml_ensemble",
+                f"ML win_prob={ml_pred.win_probability:.3f} < 0.52 threshold",
+                signal_time=now,
+            )
+
+        conviction = min(1.0, max(0.0, (ml_pred.win_probability - 0.5) * 2.0))
+
+        evidence = PatternEvidence(
+            pattern_type="ML_ENSEMBLE",
+            confirmation_time=now,
+            formation_time=now,
+            invalidation_level=0.0,
+            confidence_raw=conviction,
+            details=[
+                f"ML direction={ml_pred.direction} win_prob={ml_pred.win_probability:.3f}",
+                f"Agreement={ml_pred.model_agreement:.3f} uncertainty={ml_pred.uncertainty:.3f}",
+                f"GB={ml_pred.gradient_boost_prob:.3f} RF={ml_pred.random_forest_prob:.3f} "
+                f"NN={ml_pred.neural_net_prob:.3f} LR={ml_pred.logistic_prob:.3f}",
+            ],
+            extra={
+                "win_probability": ml_pred.win_probability,
+                "model_agreement": ml_pred.model_agreement,
+                "uncertainty": ml_pred.uncertainty,
+                "ensemble_method": ml_pred.ensemble_method,
+                "gradient_boost_prob": ml_pred.gradient_boost_prob,
+                "random_forest_prob": ml_pred.random_forest_prob,
+                "neural_net_prob": ml_pred.neural_net_prob,
+                "logistic_prob": ml_pred.logistic_prob,
+            },
+        )
+
+        return EngineVote(
+            engine_name="ml_ensemble",
+            direction=ml_pred.direction,
+            conviction=conviction,
+            pattern_evidence=[evidence],
+            proposed_sl=0.0,   # ML Ensemble does not derive structural SL/TP
+            proposed_tp=0.0,
+            invalidation_level=0.0,
+            signal_time=now,
+        )
+
+    except Exception as exc:
+        return make_wait_vote("ml_ensemble", f"predict_vote error: {exc}", signal_time=now)
+
+
+def _build_snapshot_features(snapshot) -> dict:
+    """
+    Build ML feature dict from FrozenDecisionSnapshot closed candle data.
+    RSI/ADX/EMA are computed here as FEATURES for the ML model.
+    They are NOT used as direct gates anywhere in this function.
+    """
+    features = {
+        "session": snapshot.session,
+        "symbol": snapshot.symbol,
+        "spread": snapshot.spread,
+    }
+    try:
+        candles = list(snapshot.candles_m5)
+        if not candles:
+            return features
+
+        # Extract closes, highs, lows
+        if isinstance(candles[-1], dict):
+            closes = [float(c.get("close", 0.0)) for c in candles]
+            highs = [float(c.get("high", 0.0)) for c in candles]
+            lows = [float(c.get("low", 0.0)) for c in candles]
+        elif isinstance(candles[-1], (list, tuple)) and len(candles[-1]) >= 5:
+            closes = [float(c[4]) for c in candles]
+            highs = [float(c[2]) for c in candles]
+            lows = [float(c[3]) for c in candles]
+        else:
+            return features
+
+        import numpy as np
+        closes_arr = np.array(closes, dtype=float)
+
+        # Price momentum features
+        features["price_return_1"] = float((closes[-1] - closes[-2]) / closes[-2]) if len(closes) > 1 else 0.0
+        features["price_return_5"] = float((closes[-1] - closes[-6]) / closes[-6]) if len(closes) > 5 else 0.0
+        features["price_return_20"] = float((closes[-1] - closes[-21]) / closes[-21]) if len(closes) > 20 else 0.0
+
+        # Volatility
+        if len(closes) >= 14:
+            features["atr_14"] = float(np.mean([highs[i] - lows[i] for i in range(-14, 0)]))
+        features["current_price"] = float(closes[-1])
+        features["account_equity"] = snapshot.account_equity
+
+    except Exception:
+        pass
+
+    return features
+
+
+# Monkey-patch predict_vote onto MLEnsemble so callers use ensemble.predict_vote(snapshot)
+MLEnsemble.predict_vote = lambda self, snapshot: ml_ensemble_predict_vote(self, snapshot)

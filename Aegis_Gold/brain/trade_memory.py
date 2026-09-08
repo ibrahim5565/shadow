@@ -359,11 +359,11 @@ class TradeMemoryDatabase:
             conn.commit()
             conn.close()
             
-            logger.info(f"✅ Trade entry recorded: {trade.trade_id} {trade.symbol} {trade.direction} @ {trade.entry_price}")
+            logger.info(f"[OK] Trade entry recorded: {trade.trade_id} {trade.symbol} {trade.direction} @ {trade.entry_price}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to record trade entry: {e}")
+            logger.error(f"[ERR] Failed to record trade entry: {e}")
             return False
     
     def update_exit(self, trade_id: int, exit_data: Dict[str, Any]) -> bool:
@@ -388,11 +388,11 @@ class TradeMemoryDatabase:
             conn.commit()
             conn.close()
             
-            logger.info(f"✅ Trade exit updated: {trade_id} | P&L: {exit_data.get('profit_usd', 'N/A')}")
+            logger.info(f"[OK] Trade exit updated: {trade_id} | P&L: {exit_data.get('profit_usd', 'N/A')}")
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to update trade exit: {e}")
+            logger.error(f"[ERR] Failed to update trade exit: {e}")
             return False
     
     def get_trade(self, trade_id: int) -> Optional[Dict]:
@@ -411,7 +411,7 @@ class TradeMemoryDatabase:
             return None
             
         except Exception as e:
-            logger.error(f"❌ Failed to retrieve trade {trade_id}: {e}")
+            logger.error(f"[ERR] Failed to retrieve trade {trade_id}: {e}")
             return None
     
     def get_recent_trades(self, limit: int = 100, symbol: Optional[str] = None) -> List[Dict]:
@@ -434,7 +434,7 @@ class TradeMemoryDatabase:
             return [dict(row) for row in rows]
             
         except Exception as e:
-            logger.error(f"❌ Failed to retrieve recent trades: {e}")
+            logger.error(f"[ERR] Failed to retrieve recent trades: {e}")
             return []
     
     def get_winning_trades(self, limit: int = 100, min_confidence: int = 0) -> List[Dict]:
@@ -457,7 +457,7 @@ class TradeMemoryDatabase:
             return [dict(row) for row in rows]
             
         except Exception as e:
-            logger.error(f"❌ Failed to retrieve winning trades: {e}")
+            logger.error(f"[ERR] Failed to retrieve winning trades: {e}")
             return []
     
     def get_losing_trades(self, limit: int = 100) -> List[Dict]:
@@ -480,7 +480,7 @@ class TradeMemoryDatabase:
             return [dict(row) for row in rows]
             
         except Exception as e:
-            logger.error(f"❌ Failed to retrieve losing trades: {e}")
+            logger.error(f"[ERR] Failed to retrieve losing trades: {e}")
             return []
     
     def analyze_performance(self, symbol: Optional[str] = None, days: int = 30) -> Dict:
@@ -586,7 +586,7 @@ class TradeMemoryDatabase:
             }
             
         except Exception as e:
-            logger.error(f"❌ Performance analysis failed: {e}")
+            logger.error(f"[ERR] Performance analysis failed: {e}")
             return {"error": str(e)}
     
     def find_similar_trades(self, current_conditions: Dict, limit: int = 20) -> List[Dict]:
@@ -632,7 +632,7 @@ class TradeMemoryDatabase:
             return [dict(row) for row in rows]
             
         except Exception as e:
-            logger.error(f"❌ Failed to find similar trades: {e}")
+            logger.error(f"[ERR] Failed to find similar trades: {e}")
             return []
     
     def get_trade_count(self) -> int:

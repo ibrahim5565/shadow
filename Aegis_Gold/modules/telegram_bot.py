@@ -9,6 +9,7 @@ import threading
 import time
 import csv
 import os
+import json
 from datetime import datetime, timezone
 
 import requests
@@ -89,9 +90,10 @@ class TelegramBot:
 
     # ── connection validation ───────────────────────────────────────
     def _validate_connection(self):
-        """Validate Telegram credentials and test connectivity at startup.
+        """Validate Telegram credentials, clear lingering webhooks, and test connectivity at startup.
         Tries IP-based route first, falls back to standard api.telegram.org."""
         global API_BASE
+        self.last_poll_time = time.time()
         if not cfg.TELEGRAM_TOKEN or not cfg.TELEGRAM_CHAT_ID:
             logger.error("Telegram token or chat ID not configured.")
             return
@@ -103,6 +105,14 @@ class TelegramBot:
         ]:
             try:
                 start = time.time()
+                # Clear any lingering webhook first to prevent 409 Conflict
+                self._session.post(
+                    f"{base_url}/deleteWebhook",
+                    headers=headers,
+                    verify=False,
+                    params={"drop_pending_updates": True},
+                    timeout=5
+                )
                 resp = self._session.get(
                     f"{base_url}/getMe",
                     headers=headers,
@@ -113,9 +123,11 @@ class TelegramBot:
                 if resp.ok:
                     data = resp.json()
                     username = data.get("result", {}).get("username", "unknown")
-                    logger.info("Telegram connected via %s: bot @%s (latency %.0f ms)", label, username, latency)
+                    logger.info("Telegram connected via %s: bot @%s (latency %.0f ms, webhook cleared)", label, username, latency)
                     API_BASE = base_url
                     return
+                elif resp.status_code in (401, 403):
+                    logger.critical("🛑 [TELEGRAM CRITICAL] HTTP %d: Invalid or revoked Telegram bot token!", resp.status_code)
                 else:
                     logger.warning("Telegram %s getMe failed: %s", label, resp.text[:200])
             except Exception as exc:
@@ -201,26 +213,27 @@ class TelegramBot:
         atr_pts = int(getattr(decision, 'atr_estimate', 0))
         sym_display = symbol or getattr(result, 'symbol', 'XAUUSD')
         
-        if not technique:
-            technique = getattr(decision, 'signal_source', 'SCALP')
+        pattern_tier = getattr(decision, 'pattern_tier', 'scalp')
 
         text = (
-            f"🚀 <b>[{mode}] {technique} TRADE OPENED</b>\n"
+            f"🚀 <b>[{mode}] [{pattern_tier.upper()}] {technique} TRADE OPENED</b>\n"
             f"─────────────────────────\n"
-            f"Symbol     : <b>{sym_display}</b>\n"
-            f"Direction  : <b>{decision.direction}</b>\n"
-            f"Confidence : <b>{decision.confidence}%</b> (Grade: {getattr(decision,'grade','?')})\n"
+            f"Symbol       : <b>{sym_display}</b>\n"
+            f"Direction    : <b>{decision.direction}</b>\n"
+            f"Confidence   : <b>{decision.confidence}%</b> (Grade: {getattr(decision,'grade','?')})\n"
             f"─────────────────────────\n"
-            f"Entry      : <code>{result.price:.5f}</code>\n"
-            f"TP         : {decision.tp_points}pts\n"
-            f"Lot Size   : {decision.lot}\n"
+            f"Entry        : <code>{result.price:.5f}</code>\n"
+            f"TP           : {decision.tp_points}pts\n"
+            f"Lot Size     : {decision.lot}\n"
             f"─────────────────────────\n"
-            f"Pattern    : {pattern}\n"
-            f"Session    : {session}\n"
-            f"Mode       : {scalp_mode}\n"
-            f"Technique  : {technique}\n"
+            f"Pattern Tier : <b>{pattern_tier.upper()}</b>\n"
+            f"Pattern      : {pattern}\n"
+            f"Session      : {session}\n"
+            f"Mode         : {scalp_mode}\n"
+            f"Technique    : {technique}\n"
         )
         self.send(text)
+
 
     def send_ai_analysis(self, symbol_analysis: dict):
         """Send periodic AI analysis summary to Telegram."""
@@ -322,10 +335,28 @@ class TelegramBot:
     def stop_polling(self):
         self._running = False
 
+    def is_listener_healthy(self, max_silence_sec: float = 60.0) -> bool:
+        """Check if Telegram listener thread is active and polling regularly."""
+        if not self._running:
+            return False
+        if self._poll_thread is None or not self._poll_thread.is_alive():
+            return False
+        silence = time.time() - getattr(self, "last_poll_time", 0.0)
+        return silence <= max_silence_sec
+
+    def ensure_listener_running(self):
+        """Watchdog check: restarts polling listener if dead or silent > 60s."""
+        if not self.is_listener_healthy(max_silence_sec=60.0):
+            logger.warning("⚠️ [TELEGRAM WATCHDOG] Polling listener is dead or silent > 60s. Restarting polling thread...")
+            self.stop_polling()
+            time.sleep(1)
+            self.start_polling()
+
     def _poll_loop(self):
-        """Polling loop with robust response handling and auto-failover."""
+        """Polling loop with robust response handling, HTTP 409 conflict resolution, 401 token check, and watchdog heartbeat."""
         while self._running:
             try:
+                self.last_poll_time = time.time()
                 logger.debug("POLLING ACTIVE (offset=%d)", self._offset)
                 headers = REQ_HEADERS if API_BASE == API_BASE_IP else {}
                 resp = self._session.get(
@@ -339,17 +370,36 @@ class TelegramBot:
                     data = resp.json()
                     updates = data.get("result", [])
                     if updates:
-                        logger.info("UPDATES RECEIVED: %d message(s)", len(updates))
+                        logger.info("📩 TELEGRAM UPDATE(S) FETCHED: %d new message(s)", len(updates))
                     for update in updates:
                         self._offset = update["update_id"] + 1
                         try:
                             self._handle_update(update)
                             time.sleep(0.1)  # Small delay to ensure response sent
                         except Exception as e:
-                            logger.error("Error handling update: %s", e)
+                            logger.error("Error handling update: %s", e, exc_info=True)
                 else:
-                    logger.warning("POLLING ERROR - HTTP %d: %s", resp.status_code, resp.text[:200])
-                    time.sleep(2)
+                    status = resp.status_code
+                    if status in (401, 403):
+                        logger.critical("🛑 [TELEGRAM CRITICAL] HTTP %d: Invalid or revoked Telegram bot token! Halting polling loop.", status)
+                        self._running = False
+                        break
+                    elif status == 409:
+                        logger.warning("⚠️ [TELEGRAM CONFLICT] HTTP 409: Active webhook or duplicate polling instance detected. Clearing webhook...")
+                        try:
+                            self._session.post(
+                                f"{API_BASE}/deleteWebhook",
+                                headers=headers,
+                                verify=False,
+                                params={"drop_pending_updates": True},
+                                timeout=5
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(3)
+                    else:
+                        logger.warning("POLLING ERROR - HTTP %d: %s", status, resp.text[:200])
+                        time.sleep(2)
             except Exception as exc:
                 logger.error("POLLING ERROR: %s", exc)
                 time.sleep(5)

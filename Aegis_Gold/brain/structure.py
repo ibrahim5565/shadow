@@ -27,12 +27,10 @@ def analyze_structure(candles, current_price: float, trend: str, point: float) -
             sl_distance=999.0
         )
         
-    try:
-        highs = [float(c['high']) for c in candles[-100:]]
-        lows = [float(c['low']) for c in candles[-100:]]
-    except TypeError:
-        highs = [float(c[2]) for c in candles[-100:]]
-        lows = [float(c[3]) for c in candles[-100:]]
+    from brain.candle_utils import parse_hlc
+    highs_all, lows_all, _ = parse_hlc(candles)
+    highs = highs_all[-100:]
+    lows  = lows_all[-100:]
         
     swing_highs = []
     swing_lows = []
@@ -85,20 +83,33 @@ def analyze_structure(candles, current_price: float, trend: str, point: float) -
         preferred_direction = "SELL"
     elif distance_to_support_pts > 100 and distance_to_resistance_pts > 100:
         position = "IN_SPACE"
+        # Resolve bias: lean toward whichever level price is closer to
+        if distance_to_support_pts < distance_to_resistance_pts:
+            preferred_direction = "BUY"
+        else:
+            preferred_direction = "SELL"
     else:
         position = "MID_RANGE"
-        
+        # Resolve MID_RANGE direction by proximity (not left as NONE)
+        if distance_to_support_pts <= distance_to_resistance_pts:
+            preferred_direction = "BUY"
+        else:
+            preferred_direction = "SELL"
+
     # Confluence Score
     confluence_score = 0
     if position == "NEAR_SUPPORT": confluence_score += 40
     if position == "NEAR_RESISTANCE": confluence_score += 40
-    
+
     if swing_lows.count(nearest_support) >= 2:
         confluence_score += 20
-        
-    if distance_to_support_pts < (ZONE_THRESHOLD * 0.5):
+
+    # Side-aware distance bonus: strong conviction when very close to the relevant level
+    if preferred_direction == "BUY" and distance_to_support_pts < (ZONE_THRESHOLD * 0.5):
         confluence_score += 20
-        
+    elif preferred_direction == "SELL" and distance_to_resistance_pts < (ZONE_THRESHOLD * 0.5):
+        confluence_score += 20
+
     if trend == "TRENDING_UP" and preferred_direction == "BUY":
         confluence_score += 20
     if trend == "TRENDING_DOWN" and preferred_direction == "SELL":

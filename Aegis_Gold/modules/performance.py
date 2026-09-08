@@ -57,8 +57,13 @@ def init_db():
             "ai_confidence": "REAL",
             "session": "TEXT",
             "partial_tp_hit": "INTEGER DEFAULT 0",
-            "win_loss": "INTEGER",
-            "timestamp": "TEXT"
+            "pattern_tier": "TEXT",
+            "big_pattern_type": "TEXT",
+            "small_pattern_type": "TEXT",
+            "consensus_score": "REAL",
+            "computed_rr": "REAL",
+            "invalidation_level": "REAL",
+            "pipeline_id": "TEXT DEFAULT 'legacy_v0'"
         }
         existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(trades)").fetchall()}
         for col_name, col_def in expected_cols.items():
@@ -74,7 +79,8 @@ def init_db():
         logger.error(f"Error initializing SQLite database: {e}")
 
 
-def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, pattern, adx, rsi, confidence, session, atr=0.0):
+def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, pattern, adx, rsi, confidence, session, atr=0.0,
+                   pattern_tier="scalp", big_pattern_type="NONE", small_pattern_type="NONE", consensus_score=0.0, computed_rr=0.0, invalidation_level=0.0, pipeline_id="dual_tier_v1"):
     """Logs the entry execution parameters of a trade into SQLite and trade_memory."""
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -82,17 +88,21 @@ def log_trade_open(ticket, symbol, direction, entry_price, sl, tp, lot, regime, 
         cursor.execute("""
             INSERT OR REPLACE INTO trades (
                 id, symbol, direction, entry_price, sl, tp, lot, regime, pattern,
-                adx_at_entry, rsi_at_entry, ai_confidence, session, timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                adx_at_entry, rsi_at_entry, ai_confidence, session, timestamp,
+                pattern_tier, big_pattern_type, small_pattern_type, consensus_score, computed_rr, invalidation_level, pipeline_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             ticket, symbol, direction, entry_price, sl, tp, lot, regime, pattern,
-            adx, rsi, confidence, session, datetime.now(timezone.utc).isoformat()
+            adx, rsi, confidence, session, datetime.now(timezone.utc).isoformat(),
+            pattern_tier, big_pattern_type, small_pattern_type, consensus_score, computed_rr, invalidation_level, pipeline_id
         ))
         conn.commit()
         conn.close()
-        logger.info(f"Logged trade open #{ticket} for {symbol} to SQLite.")
+        logger.info(f"Logged trade open #{ticket} for {symbol} ({pattern_tier}, pipeline={pipeline_id}) to SQLite.")
     except Exception as e:
         logger.error(f"Error logging trade open to SQLite: {e}")
+
+
 
     # Mirror to trade_memory.db
     try:
@@ -177,6 +187,17 @@ def log_trade_close(ticket, exit_price, profit_usd, profit_pips, duration_sec, p
         logger.info(f"Updated closed trade #{ticket} details in SQLite.")
     except Exception as e:
         logger.error(f"Error logging trade close to SQLite: {e}")
+
+    # Record outcome in ModelReliabilityTracker for dynamic model weighting
+    try:
+        from brain.model_reliability import ModelReliabilityTracker
+        mrt = ModelReliabilityTracker()
+        won = bool(profit_usd > 0 or win_loss == 1)
+        for engine_key in ["quant", "kronos", "ml_ev", "smc", "rl", "omega", "statistical"]:
+            mrt.record_outcome(engine_key, won=won, pnl=float(profit_usd))
+    except Exception as _mrt_e:
+        logger.debug(f"[ModelReliability] Outcome record error: {_mrt_e}")
+
 
     # Mirror to trade_memory.db
     try:
@@ -320,7 +341,12 @@ def get_performance_stats(last_n=10, days=None):
             "worst": round(worst, 2),
             "profit_factor": round(profit_factor, 2),
             "most_profitable_session": most_prof_session,
-            "total_trades": total
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "gross_profit": round(gross_profit, 2),
+            "gross_loss": round(gross_loss, 2),
+            "net_profit": round(gross_profit - gross_loss, 2)
         }
     except Exception as e:
         logger.error(f"Error getting performance stats: {e}")
