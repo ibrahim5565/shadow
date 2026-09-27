@@ -1965,7 +1965,30 @@ async def main_loop():
                         f"decision_direction={decision.direction} action={decision.action}"
                     )
 
-                    if skip_trade and decision.action == "TRADE":
+                    # ═══════════════════════════════════════════════════════════════════
+                    # STEP 1 FIX: OPPOSITE-DIRECTION EXCEPTION FOR SKIP_TRADE
+                    # Allow SELL to bypass BUY cooldown if BUY position open and no SELL
+                    # ═══════════════════════════════════════════════════════════════════
+                    opposite_dir_exception = False
+                    if skip_trade and decision.action == "TRADE" and decision.direction == "SELL":
+                        try:
+                            import MetaTrader5 as mt5
+                            
+                            # Check if any BUY positions exist and NO SELL positions for this symbol
+                            buy_positions = [p for p in positions if p.symbol == sym and p.type == mt5.POSITION_TYPE_BUY]
+                            sell_positions = [p for p in positions if p.symbol == sym and p.type == mt5.POSITION_TYPE_SELL]
+                            
+                            if len(buy_positions) > 0 and len(sell_positions) == 0:
+                                # Allow SELL to open hedge position even during BUY cooldown
+                                opposite_dir_exception = True
+                                logger.info(
+                                    f"✅ OPPOSITE DIRECTION EXCEPTION: Allowing SELL {sym} despite cooldown "
+                                    f"({len(buy_positions)} open BUY position(s), 0 SELL positions)"
+                                )
+                        except Exception as e:
+                            logger.warning(f"Exception checking opposite-direction exception: {e}")
+
+                    if skip_trade and decision.action == "TRADE" and not opposite_dir_exception:
                         # Log DETAILED blocking reasons (especially for SELL)
                         block_reasons = []
                         if not risk.can_trade(session, symbol=sym, current_equity=equity, session_refresh_active=session_refresh_active):

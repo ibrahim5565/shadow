@@ -150,26 +150,49 @@ def detect_swing_points(highs: List[float], lows: List[float],
     The FrozenDecisionSnapshot already strips the forming candle, but this
     fix provides defense-in-depth so the function is safe even if called
     with raw MT5 arrays that include a live bar.
+    
+    ADAPTIVE WINDOW FIX (NEW):
+    The loop `for i in range(window, n - window - 1)` can produce an empty
+    range when n is small. For range(w, n - w - 1) to be non-empty:
+      w < n - w - 1
+      2w + 1 < n
+      w <= (n - 2) / 2
+    
+    With small candle counts, we reduce the window adaptively so that swing
+    detection still works. When n <= 3, we cannot guarantee valid swings
+    and return empty lists (correct behavior — no false positives).
     """
     swing_highs: List[Tuple[int,float]] = []
     swing_lows:  List[Tuple[int,float]] = []
     n = len(highs)
 
+    # Adaptive window: reduce if necessary to avoid empty iteration range
+    # For range(w, n - w - 1) to be non-empty: w <= (n - 2) // 2
+    if n <= 3:
+        # Too few candles to reliably detect swing points
+        # Cannot guarantee 'window' bars exist on both sides
+        return swing_highs, swing_lows
+    
+    max_viable_window = (n - 2) // 2
+    effective_window = min(window, max_viable_window)
+
     # FIXED: was `range(window, n - window)` — that upper bound let the pivot
     # at i=(n-window-1) verify right_h against highs[n-window:n], touching the
     # last (potentially forming) bar. Now we stop at n-window-1 (exclusive),
     # i.e., the last checked pivot index is (n-window-2).
-    for i in range(window, n - window - 1):
-        left_h  = highs[i - window : i]
-        right_h = highs[i + 1 : i + window + 1]
-        left_l  = lows[i - window : i]
-        right_l = lows[i + 1 : i + window + 1]
+    # Using effective_window instead of window ensures no empty range.
+    for i in range(effective_window, n - effective_window - 1):
+        left_h  = highs[i - effective_window : i]
+        right_h = highs[i + 1 : i + effective_window + 1]
+        left_l  = lows[i - effective_window : i]
+        right_l = lows[i + 1 : i + effective_window + 1]
 
-        if left_h and right_h and highs[i] > max(left_h) and highs[i] >= max(right_h):
-            swing_highs.append((i, highs[i]))
+        # Use len() for numpy array safety (avoid ambiguous boolean)
+        if len(left_h) > 0 and len(right_h) > 0 and highs[i] > max(left_h) and highs[i] >= max(right_h):
+            swing_highs.append((i, float(highs[i])))
 
-        if left_l and right_l and lows[i] < min(left_l) and lows[i] <= min(right_l):
-            swing_lows.append((i, lows[i]))
+        if len(left_l) > 0 and len(right_l) > 0 and lows[i] < min(left_l) and lows[i] <= min(right_l):
+            swing_lows.append((i, float(lows[i])))
 
     return swing_highs, swing_lows
 
@@ -194,6 +217,17 @@ def detect_bos_choch(highs: List[float], lows: List[float], closes: List[float],
     }
 
     if (not swing_highs and not swing_lows) or len(closes) < 5:
+        # DIAGNOSTIC: Log swing detection failure for forensics
+        try:
+            from brain.pattern_diagnostic import log_pattern_diagnostic
+            log_pattern_diagnostic({
+                "candle_count": len(closes),
+                "swing_highs": len(swing_highs),
+                "swing_lows": len(swing_lows),
+                "reason": "Insufficient swings or candles (<5)"
+            })
+        except Exception:
+            pass
         return result
 
     current_close = closes[-1]

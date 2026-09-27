@@ -6,9 +6,8 @@ The Brain Decision Engine v5.0 — EQS-Gated Multi-Path Engine
 All paths now go through a dynamic Edge-Quality Score (EQS) gate instead of a flat 50% confidence threshold.
 EQS combines:
   1. Quant Hurst/Butterworth regime analysis (blocks NOISE band 0.45-0.55)
-  2. Kronos directional agreement (penalises trades that Kronos forecasts against)
-  3. ML Expected Value check (blocks trades where EV < 0 given win probability)
-  4. Adaptive threshold from AdaptiveLearning (EQS_MIN rises during drawdown, drops when profitable)
+  2. ML Expected Value check (blocks trades where EV < 0 given win probability)
+  3. Adaptive threshold from AdaptiveLearning (EQS_MIN rises during drawdown, drops when profitable)
 
 Dual-Tier Pattern consensus threshold lowered to 65% (signals pre-cleaned by Quant denoising).
 Pattern fallback gate: EQS >= adaptive threshold (replaces flat 50% gate).
@@ -109,7 +108,6 @@ def compute_eqs(candles_m5, direction: str, sl_pts: int, tp_pts: int,
             'eqs':              m_res.mds,
             'mds':              m_res.mds,
             'quant_score':      m_res.component_scores.get('quant', 0.60),
-            'kronos_agreement': m_res.component_scores.get('kronos', 0.50),
             'ev_approved':      m_res.expected_value >= 0.0,
             'ev':               m_res.expected_value,
             'win_prob':         m_res.win_probability,
@@ -122,7 +120,7 @@ def compute_eqs(candles_m5, direction: str, sl_pts: int, tp_pts: int,
     except Exception as _mde_err:
         logger.debug(f"[EQS] MetaDecisionEngine compute fallback: {_mde_err}")
         return {
-            'eqs': 0.60, 'mds': 0.60, 'quant_score': 0.60, 'kronos_agreement': 0.50,
+            'eqs': 0.60, 'mds': 0.60, 'quant_score': 0.60,
             'ev_approved': True, 'ev': 0.0, 'win_prob': 0.50, 'market_regime': 'UNKNOWN',
             'blocked': False, 'block_reason': '', 'component_scores': {}, 'uncertainty': 0.20
         }
@@ -188,7 +186,7 @@ def get_pattern_entry_signal(
     - Slices to closed candles so entry only evaluates closed candles.
     
     Direction is NEVER derived from:
-    ML, RL, EQS, MDS, AI confidence, SMC confidence, Kronos, Quant, Neural,
+    ML, RL, EQS, MDS, AI confidence, SMC confidence, Quant, Neural,
     Regime, Structure, Momentum, Trend.
     Those systems must NEVER create the trading direction!
     """

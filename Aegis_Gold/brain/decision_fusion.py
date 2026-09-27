@@ -183,6 +183,12 @@ class DecisionFusionV2:
         # Apply calibration penalty to final confidence score
         confidence = max(0, confidence - calibration_penalty)
 
+        # ═══════════════════════════════════════════════════════════════════
+        # STEP 4 FIX: SIMPLIFIED CONFIDENCE THRESHOLD (55% only)
+        # Single gate replaces multi-level (60/65/70/75/80) adaptive thresholds
+        # Confidence at 55% or higher = TRADE (symmetric for BUY and SELL)
+        # ═══════════════════════════════════════════════════════════════════
+        
         # Gating rules:
         # 1. Macro Blackout Window Check
         if macro_blackout:
@@ -196,27 +202,12 @@ class DecisionFusionV2:
         elif ml_prediction and float(ml_prediction.get("uncertainty", 0.0)) > float(QX.get("ensemble_disagreement_block_threshold") or 0.35):
             action = "WAIT"
             block_reason = f"VETO | ML ensemble disagreement too high"
-        # 4. Adaptive threshold gating (EQS-driven, replaces hardcoded 50%)
-        # Get adaptive threshold from AdaptiveLearning — rises during drawdown
-        _fusion_min = 60  # default 60%
-        try:
-            from brain.adaptive_learning import AdaptiveLearning
-            _fusion_min = int(AdaptiveLearning().get_eqs_threshold() * 100)
-        except Exception:
-            pass
-
-        # Uncertainty penalty: high model disagreement raises the required bar
-        _uncertainty_penalty = int(max(0.0, uncertainty - 0.3) * 20)  # up to +10 pts
-        _effective_threshold = min(75, _fusion_min + _uncertainty_penalty)
-
-        if confidence >= _effective_threshold:
+        # 4. SIMPLIFIED: Single 55% confidence threshold (no adaptive/penalty logic)
+        elif confidence >= 55:
             action = "TRADE"
         else:
             action = "WAIT"
-            block_reason = (
-                f"Confidence {confidence}% < adaptive threshold {_effective_threshold}% "
-                f"(base={_fusion_min}%, uncertainty_penalty={_uncertainty_penalty}pts)"
-            )
+            block_reason = f"Confidence {confidence}% < 55% minimum threshold"
 
 
         return FusionResult(

@@ -253,143 +253,25 @@ class RiskManager:
 
     def check_breakeven(self, position, pattern_tier: str = "scalp"):
         """
-        LAYER 6: Structural Break-Even & Partial TP Monitor.
-
-        Phase 1 Recovery Fix:
-        - Requires profit >= 1.0R (initial SL distance in points) BEFORE moving SL to BE.
-          This prevents noise whipsaws from stopping out trades at tiny 0.2R gains.
-        - At 1.0R profit, banks 50% partial profit (if lot > 0.01) and moves remaining SL to BE + buffer.
+        LAYER 6: DISABLED - HFT PER-TICK MODIFICATION REMOVED
+        
+        STEP 5 FIX: Breakeven and SL modifications are removed.
+        Entries now use COMPLETED candles only with initial SL/TP set at entry.
+        No per-tick SL/TP modifications allowed.
         """
-        try:
-            tier = getattr(position, "pattern_tier", pattern_tier) or pattern_tier
-            symbol     = position.symbol
-            profit_pts = self._position_profit_pts(position)
-
-            info   = self.gateway.symbols_data.get(symbol, {}) if self.gateway else {}
-            point  = info.get("point", 0.01 if "XAU" in symbol.upper() else 0.00001)
-            digits = info.get("digits", 2 if "XAU" in symbol.upper() else 5)
-            if point <= 0:
-                return
-
-            # Compute initial SL distance in points (1.0R)
-            if hasattr(position, "sl") and position.sl > 0:
-                initial_sl_pts = abs(position.price_open - position.sl) / point
-            else:
-                initial_sl_pts = 150.0 if "XAU" in symbol.upper() else 40.0
-
-            # Enforce 1.5R minimum trigger for break-even (raised from 1.0R).
-            # Previously at 1.0R, BE was firing too early and stopping winners before they
-            # could develop to 2.0R+. The 50% partial TP bank still fires at 1.0R.
-            one_r_pts          = initial_sl_pts
-            lock_trigger_pts   = max(initial_sl_pts * 1.5, 150.0 if "XAU" in symbol.upper() else 40.0)
-            be_buffer_pts      = float(getattr(cfg, "SCALP_BREAKEVEN_BUFFER_PTS", 10.0))
-            is_buy             = (position.type == 0)
-            ticket             = position.ticket
-
-            # 1. Partial TP Execution: Bank 50% profit at 1.0R if lot > 0.01.
-            # This MUST fire at 1.0R independent of the 1.5R BE gate.
-            vol = getattr(position, "volume", 0.01)
-            if (profit_pts >= one_r_pts and
-                    ticket not in self._partial_taken_tickets and
-                    vol >= 0.02 and self.gateway):
-                partial_vol = round(vol / 2.0, 2)
-                if partial_vol > 0:
-                    res = self.gateway.close_partial_position(position, partial_vol)
-                    if res:
-                        self._partial_taken_tickets.add(ticket)
-                        logger.info(
-                            "[PARTIAL TP BANKED] %s #%d closed %.2f lots @ 1.0R profit (%.0fpts)",
-                            symbol, ticket, partial_vol, profit_pts
-                        )
-                        self._alert(
-                            f"💰 [PARTIAL TP BANKED] {symbol} #{ticket}\n"
-                            f"Banked {partial_vol} lots @ 1.0R (+{profit_pts:.0f}pts)."
-                        )
-
-            if profit_pts < lock_trigger_pts:
-                return  # Profit has not reached 1.5R yet — do NOT move stop to BE
-
-            # 2. Move SL to Break-Even + Buffer
-            if is_buy:
-                be_sl = round(position.price_open + be_buffer_pts * point, digits)
-                if position.sl < be_sl:
-                    ok = self.gateway.modify_sl(ticket, symbol, be_sl) if self.gateway else False
-                    if ok:
-                        logger.info(
-                            "[1R PROFIT LOCK] %s #%d profit=%.0fpts (>= 1.0R %.0fpts) SL moved to BE+%.0fpts",
-                            symbol, ticket, profit_pts, lock_trigger_pts, be_buffer_pts
-                        )
-                        self._alert(
-                            f"🔒 [1R PROFIT LOCK] {symbol} #{ticket}\n"
-                            f"Profit {profit_pts:.0f}pts >= 1.0R ({lock_trigger_pts:.0f}pts).\n"
-                            f"SL moved to breakeven +{be_buffer_pts:.0f}pts."
-                        )
-            else:  # SELL
-                be_sl = round(position.price_open - be_buffer_pts * point, digits)
-                if position.sl == 0 or position.sl > be_sl:
-                    ok = self.gateway.modify_sl(ticket, symbol, be_sl) if self.gateway else False
-                    if ok:
-                        logger.info(
-                            "[1R PROFIT LOCK] %s #%d profit=%.0fpts (>= 1.0R %.0fpts) SL moved to BE+%.0fpts",
-                            symbol, ticket, profit_pts, lock_trigger_pts, be_buffer_pts
-                        )
-                        self._alert(
-                            f"🔒 [1R PROFIT LOCK] {symbol} #{ticket}\n"
-                            f"Profit {profit_pts:.0f}pts >= 1.0R ({lock_trigger_pts:.0f}pts).\n"
-                            f"SL moved to breakeven +{be_buffer_pts:.0f}pts."
-                        )
-        except Exception as exc:
-            logger.error("Breakeven error: %s", exc)
+        return
 
     # ── LAYER 7: Trailing Stop ────────────────────────────────
 
     def check_trailing_stop(self, position, pattern_tier: str = "scalp"):
         """
-        LAYER 7: Structural Trailing Stop.
-
-        Phase 2 Fix (Aug-6):
-        - Trailing stop activates AFTER profit >= 2.0R (2.0x initial SL distance).
-          Previously 1.2R — this was firing too early and closing winners at 0.4R.
-        - Trails at 1.2R distance behind price (previously 0.8R which was causing
-          0.21R average winner closes as the tight trail fired on normal pullbacks).
-        - Gold minimum trail distance: 180 points (absorbs noise without stopping out).
+        LAYER 7: DISABLED - HFT PER-TICK MODIFICATION REMOVED
+        
+        STEP 5 FIX: Trailing stop modifications are removed.
+        Entries now use COMPLETED candles only with initial SL/TP set at entry.
+        No per-tick SL/TP modifications allowed.
         """
-        try:
-            symbol     = position.symbol
-            profit_pts = self._position_profit_pts(position)
-
-            info   = self.gateway.symbols_data.get(symbol, {}) if self.gateway else {}
-            point  = info.get("point", 0.01 if "XAU" in symbol.upper() else 0.00001)
-            digits = info.get("digits", 2 if "XAU" in symbol.upper() else 5)
-            if point <= 0:
-                return
-
-            if hasattr(position, "sl") and position.sl > 0:
-                initial_sl_pts = abs(position.price_open - position.sl) / point
-            else:
-                initial_sl_pts = 150.0 if "XAU" in symbol.upper() else 40.0
-
-            # Trigger at 2.0R (was 1.2R) — let the winner develop before trailing
-            trail_trigger_pts  = initial_sl_pts * 2.0
-            # Trail at 1.2R behind price (was 0.8R) — wider room prevents early trail-out
-            trail_distance_pts = initial_sl_pts * 1.2
-            # Hard minimum trail distance: 180pts for Gold (absorbs 2-3 bar normal noise)
-            if "XAU" in symbol.upper():
-                trail_distance_pts = max(trail_distance_pts, 180.0)
-
-            if profit_pts < trail_trigger_pts:
-                return
-
-            if position.type == 0:  # BUY
-                new_sl = round(position.price_current - trail_distance_pts * point, digits)
-                if new_sl > position.sl and self.gateway:
-                    self.gateway.modify_sl(position.ticket, symbol, new_sl)
-            else:  # SELL
-                new_sl = round(position.price_current + trail_distance_pts * point, digits)
-                if (position.sl == 0 or new_sl < position.sl) and self.gateway:
-                    self.gateway.modify_sl(position.ticket, symbol, new_sl)
-        except Exception as exc:
-            logger.error("Trailing stop error: %s", exc)
+        return
 
 
     # ── LAYER 8: Time Stop ────────────────────────────────────
@@ -402,155 +284,17 @@ class RiskManager:
 
     def check_dynamic_tp(self, position, gateway) -> None:
         """
-        FIRST 200 TRADES MODE - MAXIMUM PURSUIT Dynamic Take-Profit Engine v3.
-
-        Three auto-selecting modes:
-          RECOVERY MODE  — 1+ losses today: TP chases price at 3x speed
-                           to recover losses in one big move.
-          PURSUIT MODE   — In profit, price moving our way:
-                           TP pushed continuously AHEAD of price.
-          LOCK-IN MODE   — Price reversing after peak:
-                           TP snapped tight to bank gains immediately.
-
-        Gold:  updates every 15s, 80pt buffer, 100pt extensions, 3x recovery.
-        EURUSD: updates every 20s, 15pt buffer, 20pt extensions, 2x recovery.
+        DISABLED - HFT PER-TICK MODIFICATION REMOVED
         
-        FIRST 200 TRADES: Pursue BIGGER profits - wider buffers, longer hold times.
+        STEP 5 FIX: Dynamic TP modifications are removed.
+        Entries now use COMPLETED candles only with initial SL/TP set at entry.
+        No per-tick SL/TP modifications allowed.
         """
+        return
         try:
-            ticket  = position.ticket
-            symbol  = position.symbol
-            is_gold = ("XAU" in symbol or symbol == "XAUUSD")
-
-            # FIRST 200 TRADES MODE: BIGGER PURSUIT PARAMETERS
-            if is_gold:
-                min_profit_to_pursue  = 10   # INCREASED: Wait for 10pts minimum before pursuing
-                pursue_buffer_pts     = 80   # INCREASED: 80pt buffer (was 40)
-                extend_trigger_pts    = 30   # INCREASED: 30pts trigger (was 15)
-                extend_chunk_pts      = 100  # INCREASED: 100pt extensions (was 50)
-                lock_in_pullback_pct  = 0.40 # INCREASED: Lock in only at 40% pullback (was 30%)
-                lock_in_buffer_pts    = 15   # INCREASED: 15pt buffer on lock-in (was 8)
-                throttle_sec          = 15   # Updates every 15s
-                recovery_multiplier   = 3.0
-            else:
-                min_profit_to_pursue  = 3
-                pursue_buffer_pts     = 15   # INCREASED: 15pt buffer (was 8)
-                extend_trigger_pts    = 8
-                extend_chunk_pts      = 20   # INCREASED: 20pt extensions (was 10)
-                lock_in_pullback_pct  = 0.40 # INCREASED: 40% pullback tolerance
-                lock_in_buffer_pts    = 5
-                throttle_sec          = 20
-                recovery_multiplier   = 2.0
-
-            now      = time.time()
-            last_mod = self._last_tp_modify.get(ticket, 0)
-            if now - last_mod < throttle_sec:
-                return
-
-            profit_pts    = self._position_profit_pts(position)
-            info          = self.gateway.symbols_data.get(symbol, {})
-            point         = info.get("point", 0.00001)
-            digits        = info.get("digits", 5)
-            if point <= 0:
-                return
-
-            current_price = position.price_current
-            is_buy        = (position.type == 0)
-            current_tp    = position.tp
-
-            prev_peak = self._peak_profit_pts.get(ticket, 0.0)
-            if profit_pts > prev_peak:
-                self._peak_profit_pts[ticket] = profit_pts
-            peak_profit = self._peak_profit_pts.get(ticket, 0.0)
-
-            if profit_pts < min_profit_to_pursue:
-                return
-
-            losses_today      = self.today_losses + self.consecutive_losses
-            in_recovery       = losses_today > 0
-            active_multiplier = recovery_multiplier if in_recovery else 1.0
-            mode_label        = "RECOVERY" if in_recovery else "PURSUIT"
-
-            effective_buffer = pursue_buffer_pts * active_multiplier
-            effective_chunk  = extend_chunk_pts  * active_multiplier
-
-            new_tp = None
-            reason = ""
-
-            pullback_now     = peak_profit - profit_pts
-            pullback_pct_now = (pullback_now / peak_profit) if peak_profit > 0 else 0.0
-            is_reversing     = (
-                peak_profit >= min_profit_to_pursue * 3 and
-                pullback_pct_now >= lock_in_pullback_pct
-            )
-
-            if is_reversing:
-                if is_buy:
-                    snap_tp = current_price + lock_in_buffer_pts * point
-                    if current_tp == 0 or snap_tp < current_tp:
-                        new_tp = snap_tp
-                        reason = (f"LOCK-IN [{mode_label}] peak={peak_profit:.0f}pts "
-                                  f"back={pullback_now:.0f}pts ({pullback_pct_now*100:.0f}%)")
-                else:
-                    snap_tp = current_price - lock_in_buffer_pts * point
-                    if current_tp == 0 or snap_tp > current_tp:
-                        new_tp = snap_tp
-                        reason = (f"LOCK-IN [{mode_label}] peak={peak_profit:.0f}pts "
-                                  f"back={pullback_now:.0f}pts ({pullback_pct_now*100:.0f}%)")
-            else:
-                if is_buy:
-                    pursued_tp = current_price + effective_buffer * point
-                    if current_tp == 0 or pursued_tp > current_tp:
-                        new_tp = pursued_tp
-                        reason = (f"PURSUE [{mode_label} x{active_multiplier:.0f}] "
-                                  f"profit={profit_pts:.0f}pts chasing +{effective_buffer:.0f}pts ahead")
-                else:
-                    pursued_tp = current_price - effective_buffer * point
-                    if current_tp == 0 or pursued_tp < current_tp:
-                        new_tp = pursued_tp
-                        reason = (f"PURSUE [{mode_label} x{active_multiplier:.0f}] "
-                                  f"profit={profit_pts:.0f}pts chasing +{effective_buffer:.0f}pts ahead")
-
-                if new_tp is None and current_tp != 0:
-                    pts_to_tp = (
-                        (current_tp - current_price) / point if is_buy
-                        else (current_price - current_tp) / point
-                    )
-                    if pts_to_tp <= extend_trigger_pts:
-                        if is_buy:
-                            new_tp = current_tp + effective_chunk * point
-                        else:
-                            new_tp = current_tp - effective_chunk * point
-                        reason = (f"EXTEND [{mode_label} x{active_multiplier:.0f}] "
-                                  f"{pts_to_tp:.0f}pts to TP — adding {effective_chunk:.0f}pts")
-
-            if new_tp is not None:
-                new_tp_r = round(new_tp, digits)
-                ok = gateway.modify_tp(ticket, symbol, new_tp_r)
-                if ok:
-                    self._last_tp_modify[ticket] = now
-                    old_str = f"{current_tp:.5f}" if current_tp else "NONE"
-                    tp_delta = abs(new_tp_r - current_tp) / point if current_tp else 0
-                    logger.info(
-                        f"[DynamicTP v2] {symbol} #{ticket} | {reason} | "
-                        f"{old_str} → {new_tp_r:.5f} (+{tp_delta:.0f}pts) | "
-                        f"profit={profit_pts:.0f}pts peak={peak_profit:.0f}pts"
-                    )
-                    if tp_delta >= extend_trigger_pts and self._tg_send:
-                        emoji = "🔴" if "LOCK-IN" in reason else ("🚀" if in_recovery else "🟡")
-                        try:
-                            self._tg_send(
-                                f"{emoji} <b>[DynamicTP] {symbol} #{ticket}</b>\n"
-                                f"Mode: <b>{mode_label}</b>"
-                                f"{' (x' + str(int(active_multiplier)) + ' boost)' if in_recovery else ''}\n"
-                                f"New TP: <code>{new_tp_r:.5f}</code> (+{tp_delta:.0f}pts)\n"
-                                f"Profit: {profit_pts:.0f}pts | Peak: {peak_profit:.0f}pts"
-                            )
-                        except Exception:
-                            pass
-
+            pass
         except Exception as exc:
-            logger.error(f"check_dynamic_tp error #{getattr(position, 'ticket', '?')}: {exc}")
+            pass
 
     def clear_dynamic_tp_state(self, ticket: int):
         """Call this when a trade closes to free memory."""

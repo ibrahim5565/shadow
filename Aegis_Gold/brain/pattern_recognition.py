@@ -88,6 +88,20 @@ class PatternRecognitionEngine:
         patterns.sort(key=lambda p: p.confidence, reverse=True)
         
         logger.info(f"Found {len(patterns)} patterns")
+        
+        # DIAGNOSTIC: Log pattern detection summary
+        try:
+            from brain.pattern_diagnostic import log_pattern_diagnostic
+            pattern_types = [p.name for p in patterns]
+            log_pattern_diagnostic({
+                "candle_count": len(closes),
+                "patterns_found": len(patterns),
+                "pattern_types": pattern_types if patterns else ["NONE"],
+                "reason": "" if patterns else "No patterns met quality thresholds"
+            })
+        except Exception:
+            pass
+        
         return patterns
     
     def _detect_head_shoulders(self, highs, lows, closes) -> List[Pattern]:
