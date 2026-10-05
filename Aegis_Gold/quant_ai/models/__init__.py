@@ -1,0 +1,1 @@
+"""AEGIS QUANT AI — model adapters."""

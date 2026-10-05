@@ -1,0 +1,108 @@
+{
+  "generated": "2026-10-05",
+  "rejection_policy": "Reject if: license unclear, weights missing/fake, unverifiable claims, broken repository, incompatible architecture, or hardware too small. DO NOT install rejected entries.",
+  "rejected_models": [
+    {
+      "name": "Kronos-large",
+      "reason": "weights_not_public",
+      "source": "https://huggingface.co/NeoQuasar/Kronos-large",
+      "detail": "Model card lists Kronos-large as 'not yet publicly available'. Do not pretend it is downloadable."
+    },
+    {
+      "name": "PyPI 'kronos' 0.2.2",
+      "reason": "unrelated_package",
+      "source": "https://pypi.org/project/kronos/0.2.2/",
+      "detail": "PyPI 'kronos' is a Django cron-scheduler by jgorset (2011), NOT the financial K-line foundation model. The real Kronos installs from GitHub shiyu-coder/Kronos."
+    },
+    {
+      "name": "Aegis legacy 'Kronos-Base-v1.0' (models/kronos_small.pt from kronos_engine/)",
+      "reason": "not_pretrained_custom_checkpoint",
+      "source": "local Aegis_Gold/kronos_engine + scripts/download_and_setup_kronos.py",
+      "detail": "The legacy engine builds a randomly-initialized custom transformer, saves it to models/kronos_small.pt, and labels it 'Kronos'. It is NOT a download of NeoQuasar/Kronos-small weights, so it must NOT be described as a pretrained foundation model. Preserved only as the existing local engine; excluded from pretrained-model claims and from the model tournament weights."
+    },
+    {
+      "name": "Forex-specific / EURUSD-specific / XAUUSD-specific pretrained checkpoints",
+      "reason": "unverifiable_checkpoint",
+      "source": "various Hugging Face repos tagged 'forex', 'trading', 'gold'",
+      "detail": "No official, license-clear, weight-complete checkpoint verified for EURUSD/XAUUSD this session. HF tags alone are not evidence. Skips integration until independently verified."
+    },
+    {
+      "name": "FinText financial models",
+      "reason": "unverified_weights",
+      "detail": "No official weight release verified this session."
+    },
+    {
+      "name": "FinGPT-Forecaster",
+      "reason": "unverified_this_session",
+      "detail": "AI4Finance-Foundation/FinGPT exists; forecaster weights and license require further verification before install."
+    },
+    {
+      "name": "Sundial / TiRex / Time-MoE / MOMENT / Lag-Llama / Timer / Timer-XL / Granite TTM / PatchTST / PatchTSMixer",
+      "reason": "not_verified_this_session",
+      "detail": "All are plausible candidates (Section 7 of the directive) but their licenses, checkpoint sizes and this 6GB-GPU compatibility were not fully verified in this session. They are catalogued as INVESTIGATE, not installed."
+    },
+    {
+      "name": "FinGPT (AI4Finance-Foundation)",
+      "reason": "gated_weights_requires_auth",
+      "source": "https://huggingface.co/FinGPT-model",
+      "detail": "FinGPT model pages (e.g. fingpt-sentiment-llama3-8b) return HTTP 401 without Hugging Face authentication; weights are gated and built on Llama-3 (Meta community license). Cannot freely verify checkpoint -> not auto-downloaded. Sentiment layer uses Apache-2.0 FinBERT instead."
+    },
+    {
+      "name": "patchtst",
+      "reason": "rejected",
+      "source": "https://huggingface.co/ibm/patchtst-etth1-pretrain",
+      "checkpoint": "ibm/patchtst-etth1-pretrain",
+      "license": "Apache-2.0",
+      "detail": "checkpoint 'ibm/patchtst-etth1-pretrain' has no pretrained forecast head (2 random head params, e.g. head.projection.bias); randomly-initialised head is NOT a pretrained forecaster"
+    },
+    {
+      "name": "moirai",
+      "reason": "not_compatible",
+      "source": "https://github.com/SalesforceAIResearch/uni2ts",
+      "checkpoint": "Salesforce/moirai-1.1-R-small",
+      "license": "Apache-2.0",
+      "detail": "`uni2ts` package not installed"
+    },
+    {
+      "name": "timesfm",
+      "reason": "not_compatible",
+      "source": "https://github.com/google-research/timesfm",
+      "checkpoint": "google/timesfm-2.0-200m-pytorch",
+      "license": "Apache-2.0",
+      "detail": "`timesfm` package not installed"
+    },
+    {
+      "name": "ttm_r1_r2",
+      "reason": "not_compatible",
+      "source": "https://huggingface.co/ibm-granite/granite-timeseries-ttm-r2",
+      "checkpoint": "granite-timeseries-ttm-r1/r2",
+      "license": "Apache-2.0",
+      "detail": "no GraniteTimeSeries/TTM class in transformers 5.14.1; needs `granite-tsfm`"
+    },
+    {
+      "name": "patchtst_namctin",
+      "reason": "rejected",
+      "source": "https://huggingface.co/namctin/patchtst_etth1_forecast",
+      "checkpoint": "namctin/patchtst_etth1_forecast",
+      "license": "gated",
+      "detail": "gated repo: HTTP 401 without authentication"
+    },
+    {
+      "name": "kronos_large",
+      "reason": "rejected",
+      "source": "https://github.com/shiyu-coder/Kronos",
+      "checkpoint": "Kronos-large",
+      "license": "MIT (weights unreleased)",
+      "detail": "weights not publicly released"
+    }
+  ],
+  "investigate": [
+    "TiRex (microsoft) - license/checkpoint",
+    "Sundial (Intel) - license/checkpoint",
+    "Time-MoE (Time-MoE org) - checkpoint size vs 6GB GPU",
+    "MOMENT (moment-timeseries-foundation-model) - checkpoint size",
+    "Lag-Llama (time-series-foundation-models) - Apache-2.0 expected",
+    "IBM Granite TTM (ibm-granite/granite-tsfm) - license",
+    "FinBERT - legal news headline feed required before news_mode can leave DISABLED"
+  ]
+}

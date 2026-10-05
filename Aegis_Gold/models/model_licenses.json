@@ -1,0 +1,49 @@
+{
+  "generated": "2026-10-05",
+  "note": "Licenses verified from official repositories / model cards. Where a license could not be verified the entry is marked 'unverified' and the model was NOT installed.",
+  "licenses": {
+    "MIT": [
+      "Kronos (shiyu-coder/Kronos) - financial K-line foundation model",
+      "Qlib (microsoft/qlib) - quant investment platform",
+      "FinRL (AI4Finance-Foundation/FinRL) - see trademark note below",
+      "Stable-Baselines3 (DLR-RM/stable-baselines3)",
+      "arch (bashtage/arch) - GARCH volatility",
+      "omega_forex_v3 (https://huggingface.co/sato2ru/omega-forex)",
+      "xauusd_smc_xgb (https://huggingface.co/JonusNattapong/xauusd-trading-ai-smc-v2)",
+      "kronos_small (https://github.com/shiyu-coder/Kronos)",
+      "kronos_mini (https://github.com/shiyu-coder/Kronos)"
+    ],
+    "Apache-2.0": [
+      "Chronos / Chronos-2 / Chronos-Bolt (amazon-science/chronos-forecasting)",
+      "Moirai / Moirai-2 / uni2ts (SalesforceAIResearch/uni2ts)",
+      "TimesFM (google-research/timesfm)",
+      "eurusd_lgb_xgb (https://huggingface.co/lvizcaya/forex-eurusd-direction)",
+      "chronos2 (https://github.com/amazon-science/chronos-forecasting)",
+      "patchtst (https://huggingface.co/ibm/patchtst-etth1-pretrain)",
+      "PatchTST (ibm/patchtst-etth1-pretrain)",
+      "IBM Granite TTM (ibm-granite/granite-timeseries-ttm-r2)"
+    ],
+    "BSD-3-Clause": [
+      "scikit-learn (scikit-learn/scikit-learn)"
+    ],
+    "unverified": [
+      "Sundial",
+      "TiRex",
+      "Time-MoE",
+      "MOMENT",
+      "Lag-Llama",
+      "Timer",
+      "Timer-XL",
+      "FinGPT",
+      "FinBERT",
+      "FinText - not installed (license/weights unverified)"
+    ],
+    "trademark_notes": {
+      "FinRL": "Repository MIT-licensed but the FinRL name/logo are trademarks of FinRL LLC; open-source license does not grant the right to use the marks. Code usage allowed with attribution; rename in any product branding."
+    },
+    "commercial_notes": {
+      "uni2ts/Moirai": "Repo states 'release is for research purposes only'; evaluate before any commercial deployment.",
+      "TimesFM": "Open version is not an officially supported Google product."
+    }
+  }
+}

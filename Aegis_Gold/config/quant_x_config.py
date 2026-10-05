@@ -58,6 +58,14 @@ _DEFAULTS: dict[str, Any] = {
     "kelly_sizing":                False,   # Fractional Kelly position sizing
     "demo_unrestricted_mode":      False,   # Strictly enforce confidence thresholds and safety filters
 
+    # ── Quant-AI advisory observer (additive, read-only, DEMO-only) ─────────
+    # Runs quant_ai in the background and logs its opinion. It never places an
+    # order and is never consulted by the risk gate or execution path.
+    "quant_ai_advisory":           False,
+    "quant_ai_advisory_interval_sec": 300,
+    "quant_ai_advisory_timeout_sec":  120,
+    "quant_ai_advisory_symbols":      None,   # None -> first 2 active symbols
+
     # ── Data Integrity ───────────────────────────────────────────────────────
     "data_integrity_gap_multiplier":   2.0,   # Bar gap > N × expected interval → flagged
     "data_integrity_stale_ticks":      50,    # Unchanged bid for N ticks → stale

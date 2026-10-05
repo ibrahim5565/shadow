@@ -1,0 +1,41 @@
+{
+  "measured": true,
+  "symbol": "EURUSD",
+  "timeframe": "M5",
+  "bars": 3000,
+  "data_source": "MT5 demo terminal",
+  "timesteps": 30000,
+  "total_elapsed_s": 101.7,
+  "train_info": {
+    "algo": "PPO",
+    "timesteps": 30000,
+    "env_symbol": "EURUSD",
+    "env_timeframe": "M5"
+  },
+  "results": [
+    {
+      "policy": "hold_only",
+      "steps": 2879,
+      "final_equity": 10000.0,
+      "return_pct": 0.0,
+      "n_closed_trades": 0,
+      "final_drawdown_pct": 0.0
+    },
+    {
+      "policy": "random_policy",
+      "steps": 2879,
+      "final_equity": 9911.08,
+      "return_pct": -0.889,
+      "n_closed_trades": 11,
+      "final_drawdown_pct": 0.0175
+    },
+    {
+      "policy": "ppo_trained",
+      "steps": 2879,
+      "final_equity": 9939.76,
+      "return_pct": -0.602,
+      "n_closed_trades": 12,
+      "drawdown_pct": 0.0201
+    }
+  ]
+}

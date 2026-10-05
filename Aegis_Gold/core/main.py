@@ -398,6 +398,34 @@ def get_status():
     with state_lock:
         return jsonify(shared_state.copy())
 
+# ── QUANT AI ADVISORY (read-only, additive) ─────────────────────────────────
+# Exposes the observer's last opinion for the dashboard. These endpoints only
+# read shared_state; they cannot trigger a decision or an order.
+@api.route('/quant_ai')
+def get_quant_ai():
+    try:
+        from core.quant_ai_advisory import snapshot
+        with state_lock:
+            return jsonify(snapshot(shared_state))
+    except Exception as exc:
+        return jsonify({"error": str(exc), "advisory_only": True}), 200
+
+@api.route('/quant_ai/health')
+def get_quant_ai_health():
+    # Never constructs the bridge here: model loading belongs to the observer
+    # thread, not a dashboard poll.
+    try:
+        from core import quant_ai_advisory as qa
+        if qa._bridge is None:
+            return jsonify({"enabled": qa._flag_on(), "bridge": "not started",
+                            "trading_mode": "DEMO", "places_orders": False})
+        return jsonify(dict(qa._bridge.health(),
+                            enabled=qa._flag_on(), places_orders=False))
+    except Exception as exc:
+        return jsonify({"enabled": False, "error": str(exc),
+                        "trading_mode": "DEMO", "places_orders": False}), 200
+
+
 @api.route('/trades')
 def get_trades():
     if not os.path.exists(JOURNAL_PATH):
@@ -1611,6 +1639,21 @@ async def main_loop():
     # Start the fast confidence updater as a background task
     asyncio.ensure_future(fast_confidence_updater())
     logger.info("✅ Live confidence updater started (5-second refresh - optimized for stability)")
+
+    # ── QUANT AI ADVISORY OBSERVER (additive, flag-gated, DEMO-only) ────────
+    # Read-only: runs quant_ai on market data and publishes an opinion into
+    # shared_state["quant_ai"] + data/quant_ai_advisory.jsonl. It cannot place
+    # orders and is not consulted by the risk gate or execution path below.
+    # Off unless quant_x_flags.json sets "quant_ai_advisory": true.
+    try:
+        from core.quant_ai_advisory import quant_ai_advisory_loop, _flag_on
+        asyncio.ensure_future(quant_ai_advisory_loop(
+            gateway, loop, executor, shared_state, state_lock))
+        logger.info("[QUANT-AI] advisory observer scheduled (flag-gated, "
+                    "currently %s)", "ON" if _flag_on() else "OFF")
+    except Exception as _qa_ex:
+        logger.warning("[QUANT-AI] advisory observer not started (non-fatal): %s",
+                       _qa_ex)
 
     while True:
         loop_count += 1
