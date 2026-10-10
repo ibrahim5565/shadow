@@ -625,6 +625,28 @@ def verify_direction_integrity(decision) -> bool:
 # Main decision engine
 # ─────────────────────────────────────────────────────────────
 
+def _emit_decision_trace(symbol, gate, decision) -> None:
+    """Measurement-only trace of the final decision (no behavior change).
+
+    Logs the gate that produced the decision plus decision.reason, pattern
+    name, and direction. Never mutates the decision and never raises.
+    """
+    try:
+        logger.info(
+            "[DECISION_TRACE] symbol=%s gate=%s action=%s direction=%s "
+            "pattern=%s reason=%s confidence=%s",
+            symbol,
+            gate,
+            getattr(decision, "action", "?"),
+            getattr(decision, "direction", "?"),
+            getattr(decision, "pattern", "?"),
+            getattr(decision, "reason", "?"),
+            getattr(decision, "confidence", "?"),
+        )
+    except Exception:
+        pass
+
+
 def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
                  spread: float, point: float, symbol: str = "XAUUSD",
                  candles_m1=None) -> Decision:
@@ -675,7 +697,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
             logger.debug(
                 f"[CANDLE-DEDUP] {symbol} candle {candle_timestamp} already traded — skipping duplicate entry"
             )
-            return Decision(
+            _decision = Decision(
                 action="WAIT",
                 direction="HOLD",
                 reason="CANDLE_ALREADY_PROCESSED",
@@ -683,6 +705,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
                 mode="DUPLICATE_CANDLE",
                 signal_source="CANDLE_DEDUPLICATION",
             )
+            _emit_decision_trace(symbol, "CANDLE_DEDUPLICATION", _decision)
+            return _decision
         # Record analysis without permanently blocking trade execution on this candle
         _decide_impl._analyzed_candles[candle_key] = time.time()
 
@@ -740,7 +764,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
             f"Pattern: {pat_entry.pattern_name} → Direction: HOLD",
             False
         ))
-        return Decision(
+        _decision = Decision(
             action="WAIT",
             direction="HOLD",
             reason=f"NO_PATTERN_DETECTED | {pat_entry.pattern_name}",
@@ -752,6 +776,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
             atr_estimate=atr_estimate,
             rsi_val=curr_rsi,
         )
+        _emit_decision_trace(symbol, "PATTERN_GATE", _decision)
+        return _decision
 
     # ═══════════════════════════════════════════════════════════
     # 2. RISK & SAFETY VALIDATION (Requirements 9, 13, 16)
@@ -808,7 +834,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
 
     if not risk_approved:
         thoughts.append(_build_thought("RISK_GATE", f"Risk blocked: {risk_rejection_reason}", False))
-        return Decision(
+        _decision = Decision(
             action="WAIT",
             direction=pattern_dir,  # Direction preserved for diagnostics! (Requirement 13)
             pattern_direction=pattern_dir,  # authoritative direction recorded even on block
@@ -821,6 +847,8 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
             atr_estimate=atr_estimate,
             rsi_val=curr_rsi,
         )
+        _emit_decision_trace(symbol, "RISK_GATE", _decision)
+        return _decision
 
     # ═══════════════════════════════════════════════════════════
     # 3. SL / TP CALCULATION & SYMMETRICAL VALIDATION (Requirements 10, 11, 12)
@@ -900,6 +928,7 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
         _decide_impl._traded_candles[candle_key] = time.time()
         _decide_impl._processed_candles[candle_key] = time.time()
 
+    _emit_decision_trace(symbol, "PATTERN_ENGINE", decision)
     return decision
 
 
