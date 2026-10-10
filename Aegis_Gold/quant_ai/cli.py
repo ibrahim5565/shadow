@@ -5,7 +5,7 @@ Commands
   env         measured machine / package snapshot
   models      raw prediction from every configured adapter
   decide      one full pipeline decision (DEMO-safe; NEVER sends an order)
-  paper       event-driven PAPER run over MT5 (or synthetic) history
+  paper       event-driven PAPER run over real MT5 / CSV history (NO synthetic)
   tournament  walk-forward model leaderboard vs the naive baselines
   matrix      measured model matrix -> docs/model_matrix.json
 
@@ -30,9 +30,22 @@ def _print(obj) -> None:
         print(obj)
 
 
-def _synth(symbol: str, n: int):
-    from scripts.run_model_matrix import synth  # type: ignore
-    return synth(symbol, n=n)
+_SYNTH_DISABLED = (
+    "SYNTHETIC DATA DISABLED (Oct 2026 real-data-only policy). No real MT5 "
+    "export found, so the audit REFUSES to run. Supply the 12-month MT5 "
+    "exports for M5, M15, H1. Previous funnel results (48,018 patterns / "
+    "4 trades) are INVALID (synthetic data) and must not be used.")
+# PREVIOUS FUNNEL RESULTS: INVALID (synthetic data).
+# 48,018 patterns / 4 trades must NOT be used for any decision.
+# Real-data-only policy (Oct 2026): audit refuses to run without
+# 12-month MT5 exports for M5, M15, H1 (>=20,000 bars each).
+SYNTHETIC_FUNNEL_INVALID = True
+FUNNEL_INVALIDATION_NOTE = _SYNTH_DISABLED
+INVALID_RESULTS = {"patterns_48018": "INVALID (synthetic)",
+                   "trades_4": "INVALID (synthetic)"}
+
+
+
 
 
 def cmd_env(args) -> int:
@@ -45,15 +58,34 @@ def cmd_env(args) -> int:
 def cmd_models(args) -> int:
     from quant_ai.aegis_bridge import fetch_mt5_history
     from quant_ai.pipeline import QuantAIPipeline
+    from quant_ai.data_mt5 import load_mt5_csv, validate_bars, find_real_files
     df = None
-    if not args.synthetic:
+    src = "none"
+    if args.csv:
+        df = load_mt5_csv(args.csv, timeframe=args.timeframe)
+        validate_bars(df, args.timeframe, path=args.csv, symbol=args.symbol)
+        src = f"csv:{args.csv}"
+    elif not args.synthetic:
         df = fetch_mt5_history(args.symbol, args.timeframe, bars=args.bars)
         if df is not None:
             print(f"[data] MT5 {args.symbol} {args.timeframe} bars={len(df)}")
+            src = "mt5"
+    if df is None and not args.synthetic:
+        # REAL-DATA-ONLY: try MT5 export files before refusing.
+        found = find_real_files(symbol=args.symbol)
+        cands = found.get(args.timeframe.upper(), [])
+        if cands:
+            df = load_mt5_csv(cands[0], timeframe=args.timeframe)
+            validate_bars(df, args.timeframe, path=cands[0], symbol=args.symbol)
+            src = f"csv:{cands[0]}"
     if df is None:
-        df = _synth(args.symbol, max(args.bars, 700))
-        print(f"[data] synthetic {args.symbol} bars={len(df)} "
-              "(MT5 unavailable or --synthetic)")
+        print("[data] REAL DATA MISSING: no MT5 terminal data, no --csv, "
+              "and no XAUUSD_<TF>_*.csv export found. Refusing to run - "
+              "synthetic generation is DISABLED. Supply the 12-month MT5 "
+              "exports for M5, M15, H1. Previous funnel results "
+              "(48,018 patterns / 4 trades) are INVALID (synthetic).")
+        return 2
+    print(f"[data] source={src} bars={len(df)}")
     pipe = QuantAIPipeline(store=None)
     models = pipe.build_models(args.symbol, args.timeframe)
     print(f"[models] {len(models)} adapters configured")
@@ -67,13 +99,20 @@ def cmd_models(args) -> int:
 
 def cmd_decide(args) -> int:
     from quant_ai.aegis_bridge import AegisQuantBridge
+    from quant_ai.data_mt5 import load_mt5_csv
     llm = None
     if args.llm:
         from quant_ai.llm.reasoner import OllamaReasoner
         llm = OllamaReasoner(model=args.llm_model)
         print(f"[llm] optional: {args.llm_model} available={llm.health_check()}")
     bridge = AegisQuantBridge(llm=llm)
-    df = _synth(args.symbol, max(args.bars, 700)) if args.synthetic else None
+    df = load_mt5_csv(args.csv, timeframe=args.timeframe) if args.csv else None
+    if args.synthetic and df is None:
+        print("[decide] REFUSED: --synthetic is DISABLED under the Oct 2026 "
+              "real-data-only policy. Pass --csv <MT5 export> or connect MT5. "
+              "Previous funnel results (48,018 patterns / 4 trades) are "
+              "INVALID (synthetic).")
+        return 2
     sig = bridge.analyze(args.symbol, args.timeframe, bars=args.bars,
                          equity=args.equity, df=df)
     _print(sig.to_dict())
@@ -90,11 +129,22 @@ def cmd_paper(args) -> int:
     from quant_ai.pipeline import QuantAIPipeline, symbol_profile
     from quant_ai.risk.risk_engine import RiskManager
     prof = symbol_profile(args.symbol)
-    df = fetch_mt5_history(args.symbol, args.timeframe, bars=args.bars)
-    src = "mt5"
+    from quant_ai.data_mt5 import load_mt5_csv, find_real_files
+    df = load_mt5_csv(args.csv, timeframe=args.timeframe) if args.csv else None
+    src = f"csv:{args.csv}" if df is not None else "none"
     if df is None:
-        df = _synth(args.symbol, max(args.bars, 700))
-        src = "synthetic"
+        df = fetch_mt5_history(args.symbol, args.timeframe, bars=args.bars)
+        src = "mt5" if df is not None else "none"
+    if df is None:
+        cands = find_real_files(symbol=args.symbol).get(args.timeframe.upper(), [])
+        if cands:
+            df = load_mt5_csv(cands[0], timeframe=args.timeframe)
+            src = f"csv:{cands[0]}"
+    if df is None:
+        print("[paper] REAL DATA MISSING: no --csv, no MT5 terminal data, "
+              "no XAUUSD_<TF>_*.csv export. Refusing to run - synthetic "
+              "generation is DISABLED. Supply 12-month M5, M15, H1 exports.")
+        return 2
     print(f"[paper] source={src} bars={len(df)} symbol={args.symbol} "
           f"timeframe={args.timeframe}")
     cfg = QAIConfig()
@@ -140,11 +190,23 @@ def cmd_tournament(args) -> int:
     from quant_ai.pipeline import QuantAIPipeline
     from quant_ai.storage.db import QuantAIStore
     from quant_ai.validation.tournament import ModelTournament
-    df = fetch_mt5_history(args.symbol, args.timeframe, bars=args.bars)
-    source = "mt5"
+    from quant_ai.data_mt5 import load_mt5_csv, find_real_files
+    df = load_mt5_csv(args.csv, timeframe=args.timeframe) if args.csv else None
+    source = f"csv:{args.csv}" if df is not None else "none"
     if df is None:
-        df = _synth(args.symbol, max(args.bars, 700))
-        source = "synthetic"
+        df = fetch_mt5_history(args.symbol, args.timeframe, bars=args.bars)
+        source = "mt5" if df is not None else "none"
+    if df is None:
+        cands = find_real_files(symbol=args.symbol).get(args.timeframe.upper(), [])
+        if cands:
+            df = load_mt5_csv(cands[0], timeframe=args.timeframe)
+            source = f"csv:{cands[0]}"
+    if df is None:
+        print("[tournament] REAL DATA MISSING: no --csv, no MT5 terminal "
+              "data, no XAUUSD_<TF>_*.csv export. Refusing to run - "
+              "synthetic generation is DISABLED. Previous funnel results "
+              "(48,018 patterns / 4 trades) are INVALID (synthetic).")
+        return 2
     print(f"[tournament] source={source} bars={len(df)} "
           f"{args.symbol} {args.timeframe} horizon={args.horizon}")
     pipe = QuantAIPipeline(store=None)
@@ -158,6 +220,48 @@ def cmd_tournament(args) -> int:
           "baseline_previous_close / baseline_random_walk out-of-sample. "
           "High raw accuracy alone is NOT promotion evidence.")
     return 0
+
+
+def cmd_validate(args) -> int:
+    import re
+    from quant_ai.data_mt5 import (find_real_files, load_mt5_csv,
+                                   validate_bars, require_min_bars,
+                                   RealDataMissing, InsufficientRealDataError)
+    print("PREVIOUS FUNNEL RESULTS: INVALID (synthetic data) - "
+          "48,018 patterns / 4 trades must NOT be used.")
+    paths: list = []
+    if args.csv:
+        paths = list(args.csv)
+    else:
+        found = find_real_files([args.dir] if args.dir else None,
+                                symbol=args.symbol)
+        for tf in ("M5", "M15", "H1"):
+            paths += found.get(tf, [])
+    if not paths:
+        print(f"REAL DATA MISSING for {args.symbol}: no MT5 export found. "
+              "Refusing to run - synthetic generation is DISABLED. "
+              "Supply the 12-month MT5 exports for M5, M15, H1 "
+              "(put XAUUSD_M5_*.csv / XAUUSD_M15_*.csv / XAUUSD_H1_*.csv "
+              "in d:\\Trading\\data_mt5).")
+        return 2
+    rc = 0
+    for p in paths:
+        m = re.search(r"_(M5|M15|H1|M1|M30|H4|D1)(?:_|$|\.)",
+                      p.upper().replace("-", "_"))
+        tf = m.group(1) if m else "M5"
+        try:
+            df = load_mt5_csv(p, timeframe=tf)
+            require_min_bars(validate_bars(df, tf, path=p,
+                                           symbol=args.symbol))
+        except (RealDataMissing, InsufficientRealDataError,
+                ValueError) as exc:
+            print(f"[validate] ABORT {tf} {p}: {exc}")
+            rc = 2
+    if rc == 0:
+        print("[validate] OK: all supplied files are audit-grade "
+              "(>=20,000 bars each). Waiting on full 12-month M5/M15/H1 "
+              "exports before any audit runs.")
+    return rc
 
 
 def cmd_matrix(args) -> int:
@@ -177,11 +281,24 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--symbol", default="XAUUSD")
         sp.add_argument("--timeframe", default="M5")
         sp.add_argument("--bars", type=int, default=bars_default)
+        sp.add_argument("--csv", default=None,
+                        help="real MT5 tab-separated export "
+                        "(<DATE>\\t<TIME>\\t<OPEN>\\t<HIGH>\\t<LOW>\\t<CLOSE>"
+                        "\\t<TICKVOL>\\t<VOL>\\t<SPREAD>)")
         sp.add_argument("--synthetic", action="store_true",
-                        help="force synthetic history (no MT5)")
+                        help="DISABLED: kept only to refuse clearly "
+                        "(real-data-only policy)")
         return sp
 
     common(sub.add_parser("env", help="measured environment snapshot"))
+    v = sub.add_parser("validate", help="validate real MT5 export(s); "
+                       "aborts if bars < 20,000 per timeframe")
+    v.add_argument("--symbol", default="XAUUSD")
+    v.add_argument("--csv", action="append", default=[],
+                   help="explicit MT5 export file (repeatable); "
+                   "timeframe inferred from _M5/_M15/_H1 in name")
+    v.add_argument("--dir", default=None,
+                   help="directory to scan for XAUUSD_<TF>_*.csv")
     m = common(sub.add_parser("models", help="raw adapter predictions"))
     m.add_argument("--horizon", type=int, default=12)
     d = common(sub.add_parser("decide", help="one full pipeline decision"))
@@ -201,7 +318,7 @@ def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     handlers = {"env": cmd_env, "models": cmd_models, "decide": cmd_decide,
                 "paper": cmd_paper, "tournament": cmd_tournament,
-                "matrix": cmd_matrix}
+                "matrix": cmd_matrix, "validate": cmd_validate}
     return handlers[args.cmd](args)
 
 

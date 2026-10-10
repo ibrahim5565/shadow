@@ -1,0 +1,4 @@
+# PREVIOUS FUNNEL RESULTS: INVALID (synthetic data) - DO NOT USE.
+# 48,018 patterns / 4 trades were produced on synthetic OHLCV and are VOID.
+# Real-data-only policy (Oct 2026): only 12-month MT5 exports
+# (M5, M15, H1, >=20,000 bars each) may feed any audit.

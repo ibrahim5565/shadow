@@ -130,19 +130,12 @@ BLOCKED = [
 
 
 def synth(symbol: str, n: int = 700, seed: int = 17) -> pd.DataFrame:
-    """Realistic synthetic OHLCV with valid candle geometry."""
-    base = 2400.0 if "XAU" in symbol.upper() or "GOLD" in symbol.upper() else 1.10
-    rng = np.random.default_rng(seed)
-    close = base * np.exp(np.cumsum(rng.normal(0.00005, 0.0006, n)))
-    open_ = np.roll(close, 1)
-    open_[0] = close[0]
-    wick = (np.abs(rng.normal(0, 0.0005, n)) + 0.0002) * base
-    high = np.maximum(open_, close) + wick
-    low = np.minimum(open_, close) - wick
-    df = pd.DataFrame({"open": open_, "high": high, "low": low, "close": close})
-    df["volume"] = rng.integers(500, 5000, n).astype(float)
-    df.index = pd.date_range("2026-01-01", periods=n, freq="5min")
-    return df
+    """DISABLED synthetic generator (Oct 2026 real-data-only policy)."""
+    raise RuntimeError(
+        "SYNTHETIC DATA DISABLED: scripts/run_model_matrix.py:synth must "
+        "never be called. The audit refuses to run without real MT5 "
+        "exports (12-month M5, M15, H1). All previous funnel results "
+        "(48,018 patterns / 4 trades) are INVALID (synthetic data).")
 
 
 def measure(entry: dict) -> dict:
@@ -167,7 +160,21 @@ def measure(entry: dict) -> dict:
             row["reason"] = (getattr(inst, "_refuse_reason", "")
                              or "weights could not be loaded")
             return row
-        df = synth(entry["symbol"])
+        df = None
+        csv_path = (entry.get("csv") or os.environ.get("QAI_REAL_CSV", ""))
+        if csv_path:
+            from quant_ai.data_mt5 import load_mt5_csv
+            df = load_mt5_csv(csv_path, timeframe="M5")
+            row["verified_on"] = {"data": f"real MT5 export {csv_path}",
+                                  "n_bars": len(df), "horizon": 12,
+                                  "symbol_label": entry["symbol"],
+                                  "device": "cpu"}
+        else:
+            row["status"] = "NOT_TESTED"
+            row["reason"] = ("no real MT5 export supplied (set QAI_REAL_CSV "
+                             "or entry['csv']); synthetic harness DISABLED. "
+                             "Previous funnel results are INVALID.")
+            return row
         t1 = time.perf_counter()
         pred = inst.predict(df, 12)
         row["latency_ms"] = round((time.perf_counter() - t1) * 1000.0, 1)
@@ -183,13 +190,12 @@ def measure(entry: dict) -> dict:
             # the checkpoint loads and runs, it does NOT prove forecasting skill.
             row["evidence"] = (
                 "checkpoint weights loaded and produced one finite forecast on a "
-                "synthetic OHLCV harness. This is a load-and-run check only: it is "
+                "real MT5 export. Load-and-run check only "
                 "NOT out-of-sample accuracy, NOT profitability, and NOT a live-MT5 "
                 "test. Signal weight must come from ModelSelector on measured "
                 "error_log evidence, never from this row.")
-            row["verified_on"] = {"data": "synthetic OHLCV "
-                               "(scripts/run_model_matrix.py:synth)",
-                                  "n_bars": 700, "horizon": 12,
+            row["verified_on"] = {"data": f"real MT5 export {csv_path}",
+                                  "n_bars": len(df), "horizon": 12,
                                   "symbol_label": entry["symbol"],
                                   "device": "cpu"}
         else:
