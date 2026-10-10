@@ -5,9 +5,22 @@ Simulates opening/closing positions, tracking P&L, and managing daily state.
 """
 
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timezone
 import pandas as pd
+
+from scripts.pattern_audit.risk_limits import LimitValue, read_audit_limits
+
+# Real RiskManager.can_trade() conditions needing MT5/account state -
+# NOT evaluated here; listed as UNCONFIRMED in the audit report.
+UNCONFIRMED_REAL_GATES = (
+    "DRAWDOWN_GUARD (DD_BLOCK_NEW_PCT, needs live equity curve)",
+    "SESSION_REFRESH_45MIN_BLOCK (needs live refresh state)",
+    "CVAR_DAILY_TAIL_LOSS_GUARD (needs live PnL tail + QX flag)",
+    "GLOBAL_COOLDOWN_FILE (needs live cooldown file state)",
+    "TRADES_PER_MINUTE (needs live order timestamps)",
+    "DIRECTION_FILTER (needs live direction state)",
+)
 
 
 @dataclass
@@ -21,8 +34,10 @@ class SimulatedPosition:
     take_profit: float
     lot_size: float
     open_time: float  # Unix timestamp
-    pattern_type: str
-    pattern_name: str
+    open_bar: int = 0  # fill-bar index (next-bar open)
+    max_hold_bars: int = 30
+    pattern_type: str = ''
+    pattern_name: str = ''
 
 
 @dataclass
@@ -56,10 +71,18 @@ class PositionSimulator:
     - Cooldown periods
     """
     
-    def __init__(self, symbol: str, point: float):
+    #: SIMULATED gate label (NOT the real RiskManager.can_trade()).
+    GATE_NAME = "SIMULATED_POSITION_LIMITS"
+
+    def __init__(self, symbol: str, point: float,
+                 limits: dict | None = None,
+                 max_hold_bars: int = 30):
         self.symbol = symbol
         self.point = point
         self.next_ticket = 1
+        #: {name: LimitValue} read from REAL live files (with file:line).
+        self.limits = dict(limits) if limits else read_audit_limits()
+        self.max_hold_bars = int(max_hold_bars)
         
         # Position tracking
         self.open_positions: Dict[int, SimulatedPosition] = {}
@@ -86,8 +109,10 @@ class PositionSimulator:
         take_profit: float,
         lot_size: float,
         open_time: float,
-        pattern_type: str,
-        pattern_name: str
+        open_bar: int = 0,
+        max_hold_bars: int | None = None,
+        pattern_type: str = '',
+        pattern_name: str = ''
     ) -> int:
         """
         Open a simulated position.
@@ -107,6 +132,9 @@ class PositionSimulator:
             take_profit=take_profit,
             lot_size=lot_size,
             open_time=open_time,
+            open_bar=open_bar,
+            max_hold_bars=(self.max_hold_bars
+                           if max_hold_bars is None else max_hold_bars),
             pattern_type=pattern_type,
             pattern_name=pattern_name
         )
@@ -116,7 +144,9 @@ class PositionSimulator:
         
         return ticket
     
-    def update_positions(self, candle: pd.Series, current_time: float):
+    def update_positions(self, candle: pd.Series, current_time: float,
+                         bar_index: int | None = None,
+                         bar_minutes: float | None = None):
         """
         Update open positions - check if SL or TP hit.
         
@@ -127,24 +157,29 @@ class PositionSimulator:
         tickets_to_close = []
         
         for ticket, pos in self.open_positions.items():
-            # Check if SL or TP hit during this candle
+            # SL/TP off REAL bar high/low (stop-before-target convention:
+            # when both are within the bar, stop loss is assumed first).
             if pos.direction == "BUY":
-                # BUY position: SL below entry, TP above
                 if candle['low'] <= pos.stop_loss:
-                    # Stop loss hit
                     tickets_to_close.append((ticket, pos.stop_loss, "SL"))
                 elif candle['high'] >= pos.take_profit:
-                    # Take profit hit
                     tickets_to_close.append((ticket, pos.take_profit, "TP"))
-            
-            elif pos.direction == "SELL":
-                # SELL position: SL above entry, TP below
+            else:  # SELL
                 if candle['high'] >= pos.stop_loss:
-                    # Stop loss hit
                     tickets_to_close.append((ticket, pos.stop_loss, "SL"))
                 elif candle['low'] <= pos.take_profit:
-                    # Take profit hit
                     tickets_to_close.append((ticket, pos.take_profit, "TP"))
+            # Time stop: TIME_STOP_BASE_SEC from live config, else
+            # max_hold_bars fallback (both simulated, both reported).
+            _tstop = self.limit("TIME_STOP_BASE_SEC")
+            _held_s = current_time - pos.open_time
+            _held_b = ((bar_index - pos.open_bar)
+                       if bar_index is not None else 10 ** 9)
+            if (_tstop > 0 and _held_s >= _tstop) or \
+                    (_held_b >= pos.max_hold_bars):
+                if not any(t == ticket for t, _, _ in tickets_to_close):
+                    tickets_to_close.append(
+                        (ticket, float(candle["close"]), "TIME"))
         
         # Close positions that hit SL/TP
         for ticket, exit_price, reason in tickets_to_close:
@@ -155,7 +190,8 @@ class PositionSimulator:
         ticket: int,
         exit_price: float,
         close_time: float,
-        reason: str = "MANUAL"
+        reason: str = "MANUAL",
+        set_loss_cooldown: bool = True,
     ):
         """Close a position and record P&L."""
         if ticket not in self.open_positions:
@@ -200,12 +236,24 @@ class PositionSimulator:
             self.consecutive_wins = 0
             
             # Set loss pause if 3 consecutive losses
-            if self.consecutive_losses >= 3:
-                self.loss_pause_until = close_time + (3600 * 4)  # 4 hour pause
+            cap_l = self.limit("MAX_CONSECUTIVE_LOSSES")
+            if cap_l > 0 and self.consecutive_losses >= cap_l:
+                pause_h = 4.0  # documented audit convention (simulated)
+                self.loss_pause_until = close_time + pause_h * 3600
+                cool = self.limit("COOLDOWN_AFTER_CONSEC_LOSSES")
+                if cool > 0:
+                    self.cooldown_until = max(
+                        self.cooldown_until, close_time + cool)
         
         # Update daily P&L
         self.daily_pnl += pnl
         
+        # Loss cooldown from REAL config (COOLDOWN_AFTER_LOSS_SEC).
+        if set_loss_cooldown and pnl < 0:
+            _lc = self.limit("COOLDOWN_AFTER_LOSS_SEC")
+            if _lc > 0:
+                self.cooldown_until = max(
+                    self.cooldown_until, close_time + _lc)
         # Remove from open positions
         del self.open_positions[ticket]
     
@@ -229,7 +277,16 @@ class PositionSimulator:
             self.daily_pnl = 0.0
             self.current_day = current_day
     
-    def can_trade(self, current_time: float, max_daily_trades: int = 5) -> tuple:
+    def limit(self, name: str) -> float:
+        """Numeric limit value (reads REAL config; see self.limits sources)."""
+        lv = self.limits.get(name)
+        return float(lv.value) if lv is not None else 0.0
+
+    def limit_sources(self) -> dict:
+        return {k: v.source for k, v in self.limits.items()}
+
+    def can_trade(self, current_time: float,
+                  max_daily_trades: float | None = None) -> tuple:
         """
         Check if new trade can be opened.
         
@@ -241,12 +298,16 @@ class PositionSimulator:
             (can_trade: bool, reason: str)
         """
         # Check daily trade limit
-        if self.daily_trades >= max_daily_trades:
-            return False, f"DAILY_LIMIT ({self.daily_trades}/{max_daily_trades})"
+        if self.daily_trades >= (self.limit("MAX_DAILY_TRADES")
+                if max_daily_trades is None else max_daily_trades):
+            cap = (self.limit("MAX_DAILY_TRADES")
+                   if max_daily_trades is None else max_daily_trades)
+            return False, f"DAILY_LIMIT ({self.daily_trades}/{cap:g})"
         
         # Check open positions limit
-        if len(self.open_positions) >= 3:
-            return False, f"MAX_OPEN_POSITIONS ({len(self.open_positions)}/3)"
+        if len(self.open_positions) >= self.limit("MAX_OPEN_TRADES"):
+            cap_o = self.limit("MAX_OPEN_TRADES")
+            return False, f"MAX_OPEN ({len(self.open_positions)}/{cap_o:g})"
         
         # Check loss pause
         if current_time < self.loss_pause_until:
@@ -254,8 +315,10 @@ class PositionSimulator:
             return False, f"LOSS_PAUSE ({hours_left:.1f}h remaining)"
         
         # Check consecutive losses
-        if self.consecutive_losses >= 3:
-            return False, f"CONSECUTIVE_LOSSES ({self.consecutive_losses})"
+        cap_c0 = self.limit("MAX_CONSECUTIVE_LOSSES")
+        if cap_c0 > 0 and self.consecutive_losses >= cap_c0:
+            cap_c = self.limit("MAX_CONSECUTIVE_LOSSES")
+            return False, f"CONSECUTIVE_LOSSES ({self.consecutive_losses}/{cap_c:g})"
         
         # Check cooldown
         if current_time < self.cooldown_until:

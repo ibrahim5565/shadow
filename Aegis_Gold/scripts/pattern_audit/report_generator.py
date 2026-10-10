@@ -28,11 +28,17 @@ def generate_funnel_table(funnel_records: List, output_path: str = None) -> pd.D
     groups = defaultdict(lambda: {
         'detected': 0,
         'risk_eval_pass': 0,
-        'can_trade_pass': 0,
+        'sim_limits_pass': 0,
         'spread_pass': 0,
         'session_pass': 0,
         'integrity_pass': 0,
-        'traded': 0
+        'traded': 0,
+        'sim_reject_DAILY_LIMIT': 0,
+        'sim_reject_MAX_OPEN': 0,
+        'sim_reject_LOSS_PAUSE': 0,
+        'sim_reject_CONSECUTIVE_LOSSES': 0,
+        'sim_reject_COOLDOWN': 0,
+        'sim_reject_OTHER': 0,
     })
     
     for record in funnel_records:
@@ -43,7 +49,7 @@ def generate_funnel_table(funnel_records: List, output_path: str = None) -> pd.D
         for gate in record.gates:
             if gate.gate_name == "RISK_EVALUATION" and gate.passed:
                 groups[key]['risk_eval_pass'] += 1
-            elif gate.gate_name == "RISK_MANAGER_CAN_TRADE" and gate.passed:
+            elif gate.gate_name == "SIMULATED_POSITION_LIMITS" and gate.passed:
                 groups[key]['can_trade_pass'] += 1
             elif gate.gate_name == "SPREAD_CHECK" and gate.passed:
                 groups[key]['spread_pass'] += 1
@@ -52,6 +58,18 @@ def generate_funnel_table(funnel_records: List, output_path: str = None) -> pd.D
             elif gate.gate_name == "DIRECTION_INTEGRITY" and gate.passed:
                 groups[key]['integrity_pass'] += 1
         
+        for gate in record.gates:
+            if gate.gate_name == "SIMULATED_POSITION_LIMITS" and not gate.passed:
+                code = (gate.metadata or {}).get("reason_code", "") or \
+                    (gate.reason.split()[0] if gate.reason else "OTHER")
+                col = {
+                    "DAILY_LIMIT": 'sim_reject_DAILY_LIMIT',
+                    "MAX_OPEN": 'sim_reject_MAX_OPEN',
+                    "LOSS_PAUSE": 'sim_reject_LOSS_PAUSE',
+                    "CONSECUTIVE_LOSSES": 'sim_reject_CONSECUTIVE_LOSSES',
+                    "COOLDOWN": 'sim_reject_COOLDOWN',
+                }.get(code, 'sim_reject_OTHER')
+                groups[key][col] += 1
         if record.final_outcome == "TRADED":
             groups[key]['traded'] += 1
     
@@ -184,3 +202,15 @@ def print_detection_report(report: dict):
         print(f"   (Awaiting user-provided broker offset)")
     
     print("\n" + "="*60)
+
+
+def generate_daily_table(daily_rows: list, output_path: str = None):
+    """Per-day output: patterns detected, trades opened, open EOD."""
+    import pandas as pd
+    cols = ["day", "patterns_detected", "trades_opened", "open_positions_eod"]
+    df = pd.DataFrame(daily_rows, columns=cols) if daily_rows \
+        else pd.DataFrame(columns=cols)
+    if output_path:
+        df.to_csv(output_path, index=False)
+        print(f"[AUDIT] Daily table saved to {output_path}")
+    return df

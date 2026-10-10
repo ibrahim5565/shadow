@@ -30,8 +30,11 @@ from scripts.pattern_audit.live_state_simulator import (
     estimate_spread_percentile
 )
 from scripts.pattern_audit.funnel_logger import FunnelLogger
+from scripts.pattern_audit.position_simulator import PositionSimulator
+from scripts.pattern_audit.risk_limits import read_audit_limits
 from scripts.pattern_audit.report_generator import (
     generate_funnel_table,
+    generate_daily_table,
     generate_detection_report,
     print_detection_report
 )
@@ -205,79 +208,96 @@ def run_audit(
     
     funnel_logger = FunnelLogger()
     
-    # Create mock risk manager (don't import real one - it would try to load MT5)
-    class MockRiskManager:
-        def __init__(self):
-            self.daily_trades = 0
-            self.consecutive_losses = 0
-            self.max_daily_trades = 5
-            self.cooldown_until = 0
-            
-        def init_daily(self, equity):
-            """Initialize daily state."""
-            self.daily_trades = 0
-            
-        def can_trade(self, session, symbol, direction, current_equity, session_refresh_active):
-            """Check if trading is allowed."""
-            # Simplified logic - real risk manager checks many conditions
-            if self.daily_trades >= self.max_daily_trades:
-                return False
-            if self.consecutive_losses >= 3:
-                return False
-            return True
-    
-    risk_mgr = MockRiskManager()
-    risk_mgr.init_daily(10000.0)  # Initialize with mock equity
-    
-    # Track daily state across replay
-    daily_trades = 0
-    consecutive_losses = 0
-    current_day_utc = None
-    
-    for pattern in patterns_m5:
-        # Simulate state at this bar
-        simulated_state = simulate_state_at_bar(
-            bar_timestamp=pattern.timestamp,
-            symbol=symbol,
-            candles=data_m5,
-            bar_index=pattern.candle_index,
-            estimated_spread=estimated_spread,
-            daily_trades_so_far=daily_trades,
-            consecutive_losses_so_far=consecutive_losses,
-            broker_offset_hours=broker_offset_hours,
-            uses_dst=uses_dst
-        )
-        
-        # Check for daily reset (00:00 UTC boundary)
-        pattern_dt = datetime.fromtimestamp(simulated_state.candle_time_utc, tz=timezone.utc)
-        pattern_day = pattern_dt.strftime("%Y-%m-%d")
-        
-        if current_day_utc != pattern_day:
-            daily_trades = 0  # Reset daily counter
-            current_day_utc = pattern_day
-        
-        # Create simulated clock for this bar
-        simulated_clock = SimulatedClock(simulated_state.candle_time_utc)
-        
-        # Log through gates
-        record = funnel_logger.log_pattern_through_gates(
-            pattern=pattern,
-            simulated_state=simulated_state,
-            symbol=symbol,
-            point=point,
-            risk_mgr=risk_mgr,
-            simulated_clock=simulated_clock
-        )
-        
-        # Update simulated state for next pattern
-        if record.final_outcome == "TRADED":
-            daily_trades += 1
-            # For now, assume 50% win rate
-            if np.random.random() < 0.5:
-                consecutive_losses = 0
-            else:
-                consecutive_losses += 1
-    
+    # SIMULATED position state (NOT real RiskManager.can_trade).
+    # Limits READ from real live config (file:line shown in report).
+    limits = read_audit_limits()
+    print('    SIMULATED limits (read-only from live files):')
+    for _k in ('MAX_DAILY_TRADES', 'MAX_OPEN_TRADES',
+               'MAX_CONSECUTIVE_LOSSES', 'COOLDOWN_AFTER_LOSS_SEC',
+               'COOLDOWN_AFTER_CONSEC_LOSSES'):
+        _lv = limits.get(_k)
+        print(f'      {_k}={_lv.value} <- {_lv.source}')
+    pos_sim = PositionSimulator(symbol, point, limits=limits)
+    pos_sim.max_hold_bars = 30
+
+    # Bar-driven replay: settle open positions on each bar, then gate
+    # patterns at that bar; fills at NEXT-BAR OPEN (no look-ahead).
+    daily_rows = []
+    cur_day = None
+    day_detected = 0
+    day_opened = 0
+    n = len(data_m5)
+    by_idx = {}
+    for _p in patterns_m5:
+        by_idx.setdefault(int(_p.candle_index), []).append(_p)
+    eod_open = {}
+    for bi in range(n):
+        _row = data_m5.iloc[bi]
+        _t = _row["time"]
+        _ts = float(_t.timestamp()) if hasattr(_t, "timestamp") else float(_t)
+        pos_sim.check_daily_reset(_ts)
+        _day = datetime.fromtimestamp(_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+        if cur_day is None:
+            cur_day = _day
+        if _day != cur_day:
+            daily_rows.append({"day": cur_day, "patterns_detected": day_detected,
+                               "trades_opened": day_opened,
+                               "open_positions_eod": eod_open.get(cur_day, 0)})
+            cur_day, day_detected, day_opened = _day, 0, 0
+        if pos_sim.open_positions:
+            pos_sim.update_positions(_row, _ts, bar_index=bi)
+        for pattern in by_idx.get(bi, []):
+            day_detected += 1
+            simulated_state = simulate_state_at_bar(
+                bar_timestamp=pattern.timestamp,
+                symbol=symbol,
+                candles=data_m5,
+                bar_index=pattern.candle_index,
+                estimated_spread=estimated_spread,
+                daily_trades_so_far=pos_sim.daily_trades,
+                consecutive_losses_so_far=pos_sim.consecutive_losses,
+                broker_offset_hours=broker_offset_hours,
+                uses_dst=uses_dst,
+            )
+            simulated_clock = SimulatedClock(simulated_state.candle_time_utc)
+            record = funnel_logger.log_pattern_through_gates(
+                pattern=pattern,
+                simulated_state=simulated_state,
+                symbol=symbol,
+                point=point,
+                risk_mgr=pos_sim,
+                simulated_clock=simulated_clock,
+            )
+            if record.final_outcome == "TRADED":
+                _fi = min(int(pattern.candle_index) + 1, n - 1)
+                _fill = data_m5.iloc[_fi]
+                _ft = _fill["time"]
+                _fts = float(_ft.timestamp()) if hasattr(_ft, "timestamp") else float(_ft)
+                pos_sim.open_position(
+                    direction=pattern.direction,
+                    entry_price=float(_fill["open"]),
+                    stop_loss=float(pattern.stop_loss),
+                    take_profit=float(pattern.take_profit),
+                    lot_size=0.01,
+                    open_time=_fts,
+                    open_bar=_fi,
+                    pattern_type=pattern.pattern_type,
+                    pattern_name=pattern.pattern_name,
+                )
+                day_opened += 1
+        eod_open[cur_day] = len(pos_sim.open_positions)
+    if cur_day is not None:
+        daily_rows.append({"day": cur_day, "patterns_detected": day_detected,
+                           "trades_opened": day_opened,
+                           "open_positions_eod": len(pos_sim.open_positions)})
+    if pos_sim.open_positions and n:
+        _last = data_m5.iloc[-1]
+        _lt = _last["time"]
+        _lts = float(_lt.timestamp()) if hasattr(_lt, "timestamp") else float(_lt)
+        for _t in list(pos_sim.open_positions):
+            pos_sim.close_position(_t, float(_last["close"]), _lts, "TIME")
+        if daily_rows:
+            daily_rows[-1]["open_positions_eod"] = 0
     print(f"       Logged {len(funnel_logger.records)} patterns through gates")
     
     # Step 6: Generate reports
@@ -298,9 +318,25 @@ def run_audit(
     # Print report
     print_detection_report(report)
     
+    daily_df = generate_daily_table(
+        daily_rows,
+        output_path="d:/Trading/Aegis_Gold/data/pattern_audit_daily.csv",
+    )
+    print("\nPER-DAY TABLE (patterns detected / trades opened / open EOD):")
+    print(daily_df.to_string(index=False) if len(daily_df) else "(empty)")
+
     # Print funnel table
-    print("\nFUNNEL TABLE:")
+    print("\nFUNNEL TABLE (SIM gate = simulated limits; counts per reason):")
     print(funnel_df.to_string(index=False))
+
+    print("\nSIM gate limits (value <- source file:line):")
+    for _k, _lv in sorted(limits.items()):
+        print(f"  {_k}={_lv.value} <- {_lv.source}")
+    from scripts.pattern_audit.position_simulator import UNCONFIRMED_REAL_GATES
+    print("\nReal RiskManager.can_trade() conditions NOT evaluated here "
+          "(UNCONFIRMED - need MT5/account state):")
+    for _g in UNCONFIRMED_REAL_GATES:
+        print(f"  - UNCONFIRMED: {_g}")
     
     print("\n" + "="*60)
     print("AUDIT COMPLETE - STOPPING HERE")

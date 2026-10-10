@@ -48,7 +48,8 @@ class FunnelLogger:
     Gates checked (in order):
     1. Pattern Detection (already done)
     2. Risk Evaluation (evaluate_risk)
-    3. Risk Manager can_trade()
+    3. SIMULATED position limits (PositionSimulator.can_trade() with
+       REAL config limits; gate labelled SIMULATED, NOT real can_trade)
     4. Spread Check
     5. Session Check
     6. Direction Integrity (verify_direction_integrity)
@@ -107,14 +108,30 @@ class FunnelLogger:
                     pattern_id, pattern, simulated_state, gates, "RISK_EVALUATION"
                 )
             
-            # Gate 3: Risk Manager can_trade()
-            can_trade_gate = self._check_can_trade(
-                risk_mgr, simulated_state, symbol, pattern.direction
-            )
+            # Gate 3: SIMULATED position limits (NOT real can_trade; the
+            # caller passes a PositionSimulator as risk_mgr; legacy mocks
+            # still work via _check_can_trade_legacy duck-typing).
+            checker = getattr(self, "_check_can_trade")
+            try:
+                import inspect as _insp
+                _names = _insp.getfullargspec(checker).args
+            except Exception:
+                _names = []
+            if "pos_sim" in _names or "current_time" in _names:
+                can_trade_gate = checker(
+                    risk_mgr, simulated_state, symbol, pattern.direction,
+                    current_time=getattr(
+                        simulated_state, "candle_time_utc",
+                        getattr(pattern, "timestamp", 0.0)),
+                )
+            else:  # legacy 4-arg mock-based tests
+                can_trade_gate = self._check_can_trade_legacy(
+                    risk_mgr, simulated_state, symbol, pattern.direction
+                )
             gates.append(can_trade_gate)
             if not can_trade_gate.passed:
                 return self._create_record(
-                    pattern_id, pattern, simulated_state, gates, "RISK_MANAGER_CAN_TRADE"
+                    pattern_id, pattern, simulated_state, gates, "SIMULATED_POSITION_LIMITS"
                 )
             
             # Gate 4: Spread Check
@@ -201,41 +218,50 @@ class FunnelLogger:
             )
     
     def _check_can_trade(
-        self, risk_mgr, simulated_state, symbol: str, direction: str
+        self, pos_sim, simulated_state, symbol: str, direction: str,
+        current_time: float = 0.0,
     ) -> GateDecision:
-        """Gate 3: Risk Manager can_trade()"""
+        """Gate 3: SIMULATED position limits (NOT real RiskManager.can_trade).
+
+        Reads limits from REAL config via PositionSimulator.limits; returns
+        the EXACT reject reason (DAILY_LIMIT / MAX_OPEN / LOSS_PAUSE /
+        CONSECUTIVE_LOSSES / COOLDOWN) so the funnel table counts per reason.
+        Real RiskManager.can_trade() conditions needing MT5/account state
+        (drawdown, 45-min refresh, CVaR, global cooldown file, TPM, direction
+        filter) are NOT evaluated here - listed as UNCONFIRMED in report.
+        """
         try:
-            # Update risk manager state
-            risk_mgr.daily_trades = simulated_state.daily_trades_count
-            risk_mgr.consecutive_losses = simulated_state.consecutive_losses
-            
-            # Check if can trade (uses simulated clock via datetime.now())
-            can_trade = risk_mgr.can_trade(
-                session=simulated_state.session,
-                symbol=symbol,
-                direction=direction,
-                current_equity=10000.0,  # Mock equity
-                session_refresh_active=False
-            )
-            
+            ok, reason = pos_sim.can_trade(current_time)
+            code = (reason.split()[0] if reason else "")
             return GateDecision(
-                gate_name="RISK_MANAGER_CAN_TRADE",
-                passed=can_trade,
-                reason="" if can_trade else "RISK_MANAGER_BLOCKED",
+                gate_name="SIMULATED_POSITION_LIMITS",
+                passed=ok,
+                reason="" if ok else reason,
                 metadata={
+                    "reason_code": code,
                     "daily_trades": simulated_state.daily_trades_count,
-                    "consecutive_losses": simulated_state.consecutive_losses
-                }
+                    "consecutive_losses": simulated_state.consecutive_losses,
+                    "open_positions": len(getattr(pos_sim, "open_positions", {})),
+                    "limits": {k: v.value for k, v in pos_sim.limits.items()},
+                    "limit_sources": pos_sim.limit_sources(),
+                },
             )
-            
         except Exception as e:
-            logger.warning(f"can_trade check error: {e}")
+            logger.warning(f"simulated limit check error: {e}")
             return GateDecision(
-                gate_name="RISK_MANAGER_CAN_TRADE",
+                gate_name="SIMULATED_POSITION_LIMITS",
                 passed=False,
                 reason=f"ERROR: {str(e)}",
-                metadata={}
+                metadata={},
             )
+
+    def _check_can_trade_legacy(
+        self, risk_mgr, simulated_state, symbol: str, direction: str
+    ) -> GateDecision:
+        """Legacy alias (kept for old tests): delegates to simulated gate."""
+        return self._check_can_trade(
+            risk_mgr, simulated_state, symbol, direction,
+            current_time=getattr(simulated_state, "candle_time_utc", 0.0))
     
     def _check_spread(self, simulated_state, symbol: str) -> GateDecision:
         """Gate 4: Spread Check"""
