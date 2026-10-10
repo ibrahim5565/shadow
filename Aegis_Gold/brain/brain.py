@@ -249,8 +249,13 @@ def get_pattern_entry_signal(
     if not is_closed_only and len(candles) >= 2:
         if hasattr(candles, "iloc"):
             closed_data = candles.iloc[:-1]
-        elif isinstance(candles, list):
-            closed_data = candles[:-1]
+        else:
+            # list, tuple, numpy structured array (MT5 copy_rates_from_pos),
+            # or any other sliceable sequence: drop the forming bar at [-1].
+            try:
+                closed_data = candles[:-1]
+            except Exception:
+                closed_data = candles
 
     if len(closed_data) < 1:
         return "HOLD", PatternEntry("HOLD", "INSUFFICIENT_DATA", None, 0.0, 0.0, 0.0)
@@ -278,11 +283,21 @@ def get_pattern_entry_signal(
                 closes.append(float(getattr(c, "close", 0.0)))
                 times.append(getattr(c, "time", None))
             else:
-                times.append(c[0] if len(c) > 0 else None)
-                opens.append(float(c[1]) if len(c) > 1 else float(c[4]))
-                highs.append(float(c[2]) if len(c) > 2 else float(c[4]))
-                lows.append(float(c[3]) if len(c) > 3 else float(c[4]))
-                closes.append(float(c[4]) if len(c) > 4 else float(c[0]))
+                # numpy structured array row (np.void): positional fields,
+                # matching the MT5 copy_rates_from_pos layout
+                # (time, open, high, low, close, ...).
+                try:
+                    times.append(c[0] if len(c) > 0 else None)
+                    opens.append(float(c[1]) if len(c) > 1 else float(c[4]))
+                    highs.append(float(c[2]) if len(c) > 2 else float(c[4]))
+                    lows.append(float(c[3]) if len(c) > 3 else float(c[4]))
+                    closes.append(float(c[4]) if len(c) > 4 else float(c[0]))
+                except Exception:
+                    times.append(None)
+                    opens.append(0.0)
+                    highs.append(0.0)
+                    lows.append(0.0)
+                    closes.append(0.0)
 
     opens = np.asarray(opens, dtype=float)
     highs = np.asarray(highs, dtype=float)
@@ -647,6 +662,38 @@ def _emit_decision_trace(symbol, gate, decision) -> None:
         pass
 
 
+def _extract_candle_time(candle):
+    """Best-effort candle timestamp for ndarray/dict/object rows.
+
+    Returns None only when no timestamp can be extracted. Used so the
+    ANALYZED/TRADED dedup keys are real timestamps, never None.
+    """
+    try:
+        if candle is None:
+            return None
+        if isinstance(candle, dict):
+            return candle.get("time")
+        if hasattr(candle, "time"):
+            return candle.time
+        # numpy structured array row (np.void) or positional sequence:
+        # MT5 copy_rates_from_pos layout is (time, open, high, low, ...).
+        try:
+            if len(candle) > 0:
+                return candle[0]
+        except Exception:
+            pass
+        try:
+            import pandas as pd  # local import: helper must stay light
+
+            if isinstance(candle, pd.Series):
+                return candle.get("time")
+        except Exception:
+            pass
+    except Exception:
+        return None
+    return None
+
+
 def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
                  spread: float, point: float, symbol: str = "XAUUSD",
                  candles_m1=None) -> Decision:
@@ -674,13 +721,14 @@ def _decide_impl(ticks, candles_m5, account: dict, risk_mgr, session: str,
     candle_timestamp = None
     try:
         sig_candle = candles_m5[-2] if (candles_m5 is not None and len(candles_m5) >= 2) else (candles_m5[-1] if candles_m5 is not None and len(candles_m5) > 0 else None)
-        if isinstance(sig_candle, dict):
-            candle_timestamp = sig_candle.get("time")
-        elif hasattr(sig_candle, "time"):
-            candle_timestamp = sig_candle.time
-        elif hasattr(candles_m5, "iloc") and len(candles_m5) > 0:
+        candle_timestamp = _extract_candle_time(sig_candle)
+        if candle_timestamp is None and hasattr(candles_m5, "iloc") and len(candles_m5) > 0:
+            # DataFrame fallback: positional row, "time" column when present.
             idx = -2 if len(candles_m5) >= 2 else -1
-            candle_timestamp = candles_m5.iloc[idx]["time"] if "time" in candles_m5.columns else idx
+            try:
+                candle_timestamp = candles_m5.iloc[idx]["time"] if "time" in candles_m5.columns else idx
+            except Exception:
+                candle_timestamp = idx
     except Exception as e:
         logger.warning(f"[{symbol}] Could not extract candle timestamp: {e}")
 

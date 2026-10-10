@@ -1990,15 +1990,14 @@ async def main_loop():
                     _closed_ct = None
                     _forming_ct = None
                     try:
-                        if isinstance(candles_m5, (list, tuple)) and len(candles_m5) >= 2:
-                            _last_c = candles_m5[-1]
-                            _prev_c = candles_m5[-2]
-                            if isinstance(_last_c, dict):
-                                _forming_ct = _last_c.get("time")
-                                _closed_ct = _prev_c.get("time")
-                            else:
-                                _forming_ct = getattr(_last_c, "time", None)
-                                _closed_ct = getattr(_prev_c, "time", None)
+                        # BUGFIX (AC-3): the MT5 feed is a numpy structured
+                        # array, not list/tuple — extract timestamps
+                        # positionally (time, open, high, low, close, ...).
+                        from brain.brain import _extract_candle_time
+                        if candles_m5 is not None and len(candles_m5) >= 1:
+                            _forming_ct = _extract_candle_time(candles_m5[-1])
+                        if candles_m5 is not None and len(candles_m5) >= 2:
+                            _closed_ct = _extract_candle_time(candles_m5[-2])
                     except Exception:
                         pass
                     logger.info(
