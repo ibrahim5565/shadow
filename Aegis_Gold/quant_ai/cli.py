@@ -38,7 +38,7 @@ _SYNTH_DISABLED = (
 # PREVIOUS FUNNEL RESULTS: INVALID (synthetic data).
 # 48,018 patterns / 4 trades must NOT be used for any decision.
 # Real-data-only policy (Oct 2026): audit refuses to run without
-# 12-month MT5 exports for M5, M15, H1 (>=20,000 bars each).
+# 12-month MT5 exports for M5, M15, H1 (M5>=60,000, M15>=20,000, H1>=5,000; span>=12m).
 SYNTHETIC_FUNNEL_INVALID = True
 FUNNEL_INVALIDATION_NOTE = _SYNTH_DISABLED
 INVALID_RESULTS = {"patterns_48018": "INVALID (synthetic)",
@@ -226,6 +226,9 @@ def cmd_validate(args) -> int:
     import re
     from quant_ai.data_mt5 import (find_real_files, load_mt5_csv,
                                    validate_bars, require_min_bars,
+                                   require_audit_ready, MIN_BARS_PER_TF,
+                                   MIN_SPAN_MONTHS, VERDICT_ABORT,
+                                   VERDICT_NEEDS_MORE_DATA,
                                    RealDataMissing, InsufficientRealDataError)
     print("PREVIOUS FUNNEL RESULTS: INVALID (synthetic data) - "
           "48,018 patterns / 4 trades must NOT be used.")
@@ -245,21 +248,35 @@ def cmd_validate(args) -> int:
               "in d:\\Trading\\data_mt5).")
         return 2
     rc = 0
+    worst = "OK"
     for p in paths:
         m = re.search(r"_(M5|M15|H1|M1|M30|H4|D1)(?:_|$|\.)",
                       p.upper().replace("-", "_"))
         tf = m.group(1) if m else "M5"
         try:
             df = load_mt5_csv(p, timeframe=tf)
-            require_min_bars(validate_bars(df, tf, path=p,
-                                           symbol=args.symbol))
+            rep = validate_bars(df, tf, path=p, symbol=args.symbol)
+            if rep.verdict == VERDICT_ABORT:
+                require_min_bars(rep)
+            elif rep.verdict == VERDICT_NEEDS_MORE_DATA:
+                worst = VERDICT_NEEDS_MORE_DATA
         except (RealDataMissing, InsufficientRealDataError,
                 ValueError) as exc:
             print(f"[validate] ABORT {tf} {p}: {exc}")
             rc = 2
+            worst = VERDICT_ABORT
+    if rc == 0 and worst == VERDICT_NEEDS_MORE_DATA:
+        print("[validate] NEEDS_MORE_DATA: bars PASS per timeframe "
+              f"(M5>={MIN_BARS_PER_TF['M5']}, M15>={MIN_BARS_PER_TF['M15']}, "
+              f"H1>={MIN_BARS_PER_TF['H1']}) but span < {MIN_SPAN_MONTHS:.0f} "
+              "months. Verdict capped at NEEDS_MORE_DATA. Waiting on full "
+              "12-month M5/M15/H1 exports before any audit runs.")
+        return 3
     if rc == 0:
         print("[validate] OK: all supplied files are audit-grade "
-              "(>=20,000 bars each). Waiting on full 12-month M5/M15/H1 "
+              f"(M5>={MIN_BARS_PER_TF['M5']}, M15>={MIN_BARS_PER_TF['M15']}, "
+              f"H1>={MIN_BARS_PER_TF['H1']}, span>={MIN_SPAN_MONTHS:.0f}m). "
+              "Waiting on full 12-month M5/M15/H1 "
               "exports before any audit runs.")
     return rc
 
@@ -292,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     common(sub.add_parser("env", help="measured environment snapshot"))
     v = sub.add_parser("validate", help="validate real MT5 export(s); "
-                       "aborts if bars < 20,000 per timeframe")
+                       "aborts if bars < per-TF minimum (M5>=60k, M15>=20k, H1>=5k); NEEDS_MORE_DATA if span<12m")
     v.add_argument("--symbol", default="XAUUSD")
     v.add_argument("--csv", action="append", default=[],
                    help="explicit MT5 export file (repeatable); "
