@@ -11,6 +11,69 @@ import pandas as pd
 
 from scripts.pattern_audit.risk_limits import LimitValue, read_audit_limits
 
+#: Supervisor-exit model status: replay uses CLOSED M5 bars only, no M1, no
+#: ticks. Same M5-EMA/ADX shape as TrendDetector, but live ALSO requires the
+#: M1 leg + forming-bar closes -> replayed exits are UNCONFIRMED.
+SUPERVISOR_EXIT_MODEL = "M5_CLOSED_ONLY_NO_M1_UNCONFIRMED"
+
+
+_M5_TREND_CACHE = {}
+
+
+def _m5_closed_only_trend(closes, highs, lows):
+    """M5 leg of TrendDetector.analyze() on CLOSED bars only.
+
+    Mirrors brain/trend_detector.py:35-48 (EMA9/21 on closes, ADX14):
+      BULLISH/BEARISH from EMA9 vs EMA21; score 60 base, +20 if ADX > 25.
+    The live M1 leg (brain/trend_detector.py:55-60) and the forming bar are
+    deliberately NOT replayed here: no M1 history, no invented ticks.
+    """
+    from brain.indicators import EMA, ADX
+
+    if len(closes) < 30:
+        return "RANGING", 0
+    # Replay calls this per bar with a growing prefix; cache the
+    # (trend, score) per series length so the sweep stays linear.
+    _key = (len(closes), round(float(closes[-1]), 6))
+    _hit = _M5_TREND_CACHE.get(_key)
+    if _hit is not None:
+        return _hit
+    ema9 = EMA(list(closes), 9)
+    ema21 = EMA(list(closes), 21)
+    adx = ADX(list(highs), list(lows), list(closes), 14)
+    if not ema9 or not ema21:
+        return "RANGING", 0
+    m5 = "BULLISH" if ema9[-1] > ema21[-1] else (
+        "BEARISH" if ema9[-1] < ema21[-1] else "NONE")
+    score = 60
+    if adx and adx[-1] > 25:
+        score += 20
+    if m5 == "BULLISH":
+        _out = ("TRENDING_UP", score)
+    elif m5 == "BEARISH":
+        _out = ("TRENDING_DOWN", score)
+    else:
+        _out = ("RANGING", 30)
+    _M5_TREND_CACHE[_key] = _out
+    return _out
+
+
+def supervisor_exit_on_closed_m5(direction, closes, highs, lows,
+                                 score_floor: int = 50):
+    """Live supervisor trend-reversal exit, replayed on closed M5 bars.
+
+    Live rule (brain/position_supervisor.py:141-148):
+      BUY  + TRENDING_DOWN + score >= 50 -> CLOSE
+      SELL + TRENDING_UP   + score >= 50 -> CLOSE
+    Returns (should_close, trend, score). No M1 leg -> UNCONFIRMED.
+    """
+    trend, score = _m5_closed_only_trend(closes, highs, lows)
+    if direction == "BUY" and trend == "TRENDING_DOWN" and score >= score_floor:
+        return True, trend, score
+    if direction == "SELL" and trend == "TRENDING_UP" and score >= score_floor:
+        return True, trend, score
+    return False, trend, score
+
 # Real RiskManager.can_trade() conditions needing MT5/account state -
 # NOT evaluated here; listed as UNCONFIRMED in the audit report.
 UNCONFIRMED_REAL_GATES = (
@@ -76,13 +139,18 @@ class PositionSimulator:
 
     def __init__(self, symbol: str, point: float,
                  limits: dict | None = None,
-                 max_hold_bars: int = 30):
+                 max_hold_bars: int = 30,
+                 supervisor_exit: bool = False):
         self.symbol = symbol
         self.point = point
         self.next_ticket = 1
         #: {name: LimitValue} read from REAL live files (with file:line).
         self.limits = dict(limits) if limits else read_audit_limits()
         self.max_hold_bars = int(max_hold_bars)
+        #: Supervisor trend-reversal exit replay (closed M5 bars only).
+        #: OFF by default -> identical behaviour to the earlier audit.
+        #: ON -> exits flagged SUPERVISOR_EXIT_TREND_REVERSAL (UNCONFIRMED).
+        self.supervisor_exit = bool(supervisor_exit)
         
         # Position tracking
         self.open_positions: Dict[int, SimulatedPosition] = {}
@@ -146,17 +214,34 @@ class PositionSimulator:
     
     def update_positions(self, candle: pd.Series, current_time: float,
                          bar_index: int | None = None,
-                         bar_minutes: float | None = None):
+                         bar_minutes: float | None = None,
+                         closes=None, highs=None, lows=None):
         """
         Update open positions - check if SL or TP hit.
         
         Args:
             candle: Current OHLC candle
             current_time: Current bar timestamp
+            closes/highs/lows: Optional CLOSED-bar series THROUGH the current
+                bar for the supervisor trend-reversal replay. When provided
+                AND self.supervisor_exit is True, the supervisor exit is
+                evaluated FIRST (before SL/TP) on those closed bars.
         """
         tickets_to_close = []
         
         for ticket, pos in self.open_positions.items():
+            # Supervisor trend-reversal replay FIRST (before SL/TP), only
+            # when enabled AND closed-bar series are provided. Live rule:
+            # brain/position_supervisor.py:141-148. No M1 leg -> UNCONFIRMED.
+            if self.supervisor_exit and closes is not None:
+                _should, _trend, _score = supervisor_exit_on_closed_m5(
+                    pos.direction, list(closes), list(highs or []),
+                    list(lows or []))
+                if _should:
+                    tickets_to_close.append(
+                        (ticket, float(candle["close"]),
+                         "SUPERVISOR_EXIT_TREND_REVERSAL"))
+                    continue
             # SL/TP off REAL bar high/low (stop-before-target convention:
             # when both are within the bar, stop loss is assumed first).
             if pos.direction == "BUY":

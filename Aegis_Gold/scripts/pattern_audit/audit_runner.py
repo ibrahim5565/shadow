@@ -145,7 +145,10 @@ def run_audit(
     symbol: str = "XAUUSD",
     months: int = 12,
     broker_offset_hours: float = None,
-    uses_dst: bool = False
+    uses_dst: bool = False,
+    supervisor_exit: bool = False,
+    tag: str = "",
+    collect_closed: bool = False,
 ):
     """
     Main audit orchestrator.
@@ -155,6 +158,12 @@ def run_audit(
         months: Target months of history (actual may differ based on data available)
         broker_offset_hours: UTC offset of broker (e.g., 2.0 for UTC+2), None = UNCONFIRMED
         uses_dst: Whether broker uses DST
+        supervisor_exit: Replay the live supervisor trend-reversal exit on
+            CLOSED M5 bars only (M5 leg of TrendDetector; no M1, no ticks).
+            OFF by default -> identical to the earlier audit. ON -> exits
+            flagged SUPERVISOR_EXIT_TREND_REVERSAL, reported UNCONFIRMED.
+        tag: Suffix for output CSV names (lets two runs coexist).
+        collect_closed: Return the simulator closed positions for comparison.
     """
     print("\n" + "="*60)
     print("PATTERN AUDIT - STARTING")
@@ -163,6 +172,10 @@ def run_audit(
     print(f"Target History: {months} months")
     print(f"Broker Offset: {broker_offset_hours if broker_offset_hours else 'UNCONFIRMED'}")
     print("="*60 + "\n")
+    if supervisor_exit:
+        from scripts.pattern_audit.position_simulator import SUPERVISOR_EXIT_MODEL
+        print(f"[AUDIT] Supervisor-exit replay ON: {SUPERVISOR_EXIT_MODEL} ")
+        print("[AUDIT] These exits are UNCONFIRMED (no M1 leg, no ticks, forming bar excluded).")
     
     # Step 1: Reset global state
     print("[1/6] Resetting global state...")
@@ -217,7 +230,8 @@ def run_audit(
                'COOLDOWN_AFTER_CONSEC_LOSSES'):
         _lv = limits.get(_k)
         print(f'      {_k}={_lv.value} <- {_lv.source}')
-    pos_sim = PositionSimulator(symbol, point, limits=limits)
+    pos_sim = PositionSimulator(symbol, point, limits=limits,
+                                supervisor_exit=supervisor_exit)
     pos_sim.max_hold_bars = 30
 
     # Bar-driven replay: settle open positions on each bar, then gate
@@ -245,7 +259,12 @@ def run_audit(
                                "open_positions_eod": eod_open.get(cur_day, 0)})
             cur_day, day_detected, day_opened = _day, 0, 0
         if pos_sim.open_positions:
-            pos_sim.update_positions(_row, _ts, bar_index=bi)
+            _hist = data_m5.iloc[:bi + 1]
+            pos_sim.update_positions(
+                _row, _ts, bar_index=bi,
+                closes=_hist["close"].tolist(),
+                highs=_hist["high"].tolist(),
+                lows=_hist["low"].tolist())
         for pattern in by_idx.get(bi, []):
             day_detected += 1
             simulated_state = simulate_state_at_bar(
@@ -306,7 +325,7 @@ def run_audit(
     # Generate funnel table
     funnel_df = generate_funnel_table(
         funnel_logger.records,
-        output_path="d:/Trading/Aegis_Gold/data/pattern_audit_funnel_table.csv"
+        output_path=f"d:/Trading/Aegis_Gold/data/pattern_audit_funnel_table{tag}.csv"
     )
     
     # Generate detection report
@@ -320,7 +339,7 @@ def run_audit(
     
     daily_df = generate_daily_table(
         daily_rows,
-        output_path="d:/Trading/Aegis_Gold/data/pattern_audit_daily.csv",
+        output_path=f"d:/Trading/Aegis_Gold/data/pattern_audit_daily{tag}.csv",
     )
     print("\nPER-DAY TABLE (patterns detected / trades opened / open EOD):")
     print(daily_df.to_string(index=False) if len(daily_df) else "(empty)")
@@ -339,6 +358,9 @@ def run_audit(
         print(f"  - UNCONFIRMED: {_g}")
     
     print("\n" + "="*60)
+    if collect_closed:
+        return list(pos_sim.closed_positions)
+
     print("AUDIT COMPLETE - STOPPING HERE")
     print("="*60)
     print("\nNext steps:")
