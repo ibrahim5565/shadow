@@ -40,7 +40,7 @@ from scripts.pattern_audit.report_generator import (
 )
 
 
-def load_historical_data(symbol: str, timeframe: str, data_dir: str = "d:/Trading/Aegis_Gold/data") -> pd.DataFrame:
+def load_historical_data(symbol: str, timeframe: str, data_dir: str = "d:/Trading/Aegis_Gold/data", months: int = 12) -> pd.DataFrame:
     """
     Load historical data from CSV or generate sample data.
     
@@ -79,7 +79,7 @@ def load_historical_data(symbol: str, timeframe: str, data_dir: str = "d:/Tradin
     print(f"[WARN] No historical data found at {csv_path}")
     print(f"[WARN] Generating sample data for DEMO (not for production use)")
     
-    return generate_sample_data(symbol, timeframe, months=12)
+    return generate_sample_data(symbol, timeframe, months=months)
 
 
 def generate_sample_data(symbol: str, timeframe: str, months: int = 12) -> pd.DataFrame:
@@ -170,7 +170,7 @@ def run_audit(
     
     # Step 2: Load historical data
     print(f"[2/6] Loading historical data...")
-    data_m5 = load_historical_data(symbol, "M5")
+    data_m5 = load_historical_data(symbol, "M5", months=months)
     
     # Calculate actual history length
     if len(data_m5) > 0:
