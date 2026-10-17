@@ -50,7 +50,7 @@ def generate_funnel_table(funnel_records: List, output_path: str = None) -> pd.D
             if gate.gate_name == "RISK_EVALUATION" and gate.passed:
                 groups[key]['risk_eval_pass'] += 1
             elif gate.gate_name == "SIMULATED_POSITION_LIMITS" and gate.passed:
-                groups[key]['can_trade_pass'] += 1
+                groups[key]['sim_limits_pass'] += 1
             elif gate.gate_name == "SPREAD_CHECK" and gate.passed:
                 groups[key]['spread_pass'] += 1
             elif gate.gate_name == "SESSION_CHECK" and gate.passed:
