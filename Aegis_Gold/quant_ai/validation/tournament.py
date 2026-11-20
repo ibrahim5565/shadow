@@ -11,7 +11,7 @@ import logging
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
@@ -33,7 +33,8 @@ class ModelTournament:
 
     def run(self, models: List, df: pd.DataFrame, horizon: int,
             symbol: str = "XAUUSD", timeframe: str = "M5",
-            step: int = 5, run_id: Optional[str] = None) -> List[dict]:
+            step: int = 5, run_id: Optional[str] = None,
+            report: Optional[Callable[[dict], None]] = None) -> List[dict]:
         run_id = run_id or f"tourney-{uuid.uuid4().hex[:8]}"
         leaderboard: List[dict] = []
         for model in models:
@@ -41,7 +42,8 @@ class ModelTournament:
             try:
                 res = self.walk.evaluate(model, df, horizon, symbol=symbol,
                                          timeframe=timeframe, step=step,
-                                         min_samples=self.min_samples)
+                                         min_samples=self.min_samples,
+                                         report=report)
                 mets = res.metrics()
             except Exception as exc:
                 logger.error("tournament eval failed for %s: %s", model.name, exc)

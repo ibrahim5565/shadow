@@ -898,6 +898,157 @@ def _():
     assert not offenders, f"execution call found in read-only layer: {offenders}"
 
 
+# == WALK-FORWARD INTEGRITY (no leakage / no crash) ==========================
+@test("walk-forward: labels past the end of the sample never raise")
+def _():
+    from quant_ai.validation.walk_forward import WalkForwardValidator
+    df = _synth(300)
+    # range(120, 299, 25) reaches t=295 -> label index 307 > 299. Before the
+    # fix that raised IndexError, which made ModelTournament throw away EVERY
+    # metric for the model (mae/rmse became None).
+    res = WalkForwardValidator(embargo=1).evaluate(
+        _StubAdapter(name="wf", ret=0.001), df, 12, min_samples=120, step=25,
+        report=lambda row: None)
+    assert len(res.predictions) > 0, "no origins recorded"
+    m = res.metrics()
+    assert m["n"] > 0 and m["mae"] is not None, m
+    assert m["rmse"] is not None and m["directional_accuracy"] is not None, m
+    assert m["n_origins"] == len(res.predictions), m
+    # the label-reading guard means nothing outside the sample is scored
+    assert m["n"] <= m["n_origins"]
+    assert m["n"] >= 5, m
+    # every scored forecast is a real number, not a partial result
+    for p in res.predictions:
+        assert p["scored"] in (True, False)
+        if p["scored"]:
+            assert p["actual"] is not None and p["forecast_price"] is not None
+
+
+@test("walk-forward: forecast is produced from past data only (no leakage)")
+def _():
+    from quant_ai.validation.walk_forward import WalkForwardValidator
+    seen = []
+
+    class _Recorder(_StubAdapter):
+        def predict(self, df, horizon, **kw):
+            seen.append(len(df))
+            return super().predict(df, horizon, **kw)
+
+    df = _synth(400)
+    WalkForwardValidator(embargo=1).evaluate(
+        _Recorder(name="rec", ret=0.001), df, 12, min_samples=120, step=40)
+    assert seen, "model never called"
+    assert seen == sorted(seen), "origins were not chronological"
+    assert all(121 <= n <= 400 for n in seen), seen      # window only grows
+    assert seen[-1] <= 400                                # never sees the future
+
+
+@test("walk-forward: report callback carries realized label and origin")
+def _():
+    from quant_ai.validation.walk_forward import WalkForwardValidator
+    df = _synth(300)
+    got = []
+    WalkForwardValidator(embargo=1).evaluate(
+        _StubAdapter(name="rep", ret=0.001), df, 12, min_samples=120,
+        step=60, report=got.append)
+    assert got, "callback never fired"
+    for row in got:
+        assert row["actual"] is not None
+        assert row["origin_index"] + 12 <= len(df) - 1
+        assert row["forecast_price"] is not None
+
+
+# ---- SELL path: the historic MT5 10016 INVALID_STOPS class of bug ----------
+@test("sell: pipeline SELL geometry is inverted-safe and validates")
+def _():
+    store = QuantAIStore(_db("sell_geom"))
+    try:
+        _eleven_errors(store, "bear", "XAUUSD", 0.00001, n=80)
+        bear = _StubAdapter(name="bear", ret=-0.0025)
+        pipe = QuantAIPipeline(config=QAIConfig(), store=store)
+        d = pipe.decide(_synth(400, trend=-0.0004), symbol="XAUUSD",
+                        timeframe="M5", equity=10_000, spread_pts=5.0,
+                        models=[bear])
+        assert d.action == "SELL", f"expected SELL, got {d.action}: {d.reason}"
+        p = d.position
+        entry, sl, tp = p["entry"], p["sl"], p["tp"]
+        # MT5 requires SELL SL above entry and SELL TP below entry
+        assert sl > entry > tp, (entry, sl, tp)
+        assert p["sl_points"] > 0 and p["tp_points"] > 0
+        assert d.validation["ok"], d.validation
+        assert d.demo_guard["ok"], d.demo_guard
+        assert getattr(d, "ensemble_direction", None) == "DOWN"
+        # re-validate the emitted geometry with a fresh validator
+        assert ExecutionValidator().validate(OrderSpec(
+            symbol="XAUUSD", side="SELL", entry=entry, sl=sl, tp=tp,
+            volume=p["lot"], point=0.01, digits=2))["ok"]
+    finally:
+        store.close()
+
+
+@test("sell: classic 10016 shapes are rejected by the validator")
+def _():
+    v = ExecutionValidator()
+    shapes = {
+        "SL below entry": OrderSpec(symbol="XAUUSD", side="SELL", entry=2400.0,
+                                    sl=2395.0, tp=2390.0, volume=0.1,
+                                    point=0.01, digits=2),
+        "TP above entry": OrderSpec(symbol="XAUUSD", side="SELL", entry=2400.0,
+                                    sl=2410.0, tp=2405.0, volume=0.1,
+                                    point=0.01, digits=2),
+        "SL == entry": OrderSpec(symbol="XAUUSD", side="SELL", entry=2400.0,
+                                 sl=2400.0, tp=2390.0, volume=0.1,
+                                 point=0.01, digits=2),
+        "naked SL": OrderSpec(symbol="XAUUSD", side="SELL", entry=2400.0,
+                              sl=0.0, tp=2390.0, volume=0.1,
+                              point=0.01, digits=2),
+        "SL nearer than stops level": OrderSpec(
+            symbol="XAUUSD", side="SELL", entry=2400.0, sl=2400.1, tp=2390.0,
+            volume=0.1, point=0.01, digits=2, stops_level_pts=50.0),
+    }
+    for label, spec in shapes.items():
+        r = v.validate(spec)
+        assert not r["ok"], f"{label} must be rejected: {r}"
+    ok = v.validate(OrderSpec(symbol="XAUUSD", side="SELL", entry=2400.0,
+                              sl=2410.0, tp=2390.0, volume=0.1,
+                              point=0.01, digits=2))
+    assert ok["ok"], ok
+    assert ok["normalized_sl"] > 2400.0 > ok["normalized_tp"], ok
+
+
+@test("sell: paper broker settles SELL at SL on a rally and TP on a drop")
+def _():
+    b = PaperBroker(PaperBrokerConfig(symbol="XAUUSD", point=0.01, digits=2,
+                                      commission_per_lot=7.0,
+                                      slippage_points=1))
+    px = 2400.0
+    r = b.try_open(side="SELL", price=px, sl=px + 2.0, tp=px - 3.0,
+                   lot=0.10, index=0, ts="t0")
+    assert r["ok"], r
+    tr = b.manage(index=1, ts="t1", high=px + 3.0, low=px - 0.5, close=px + 2.5)
+    assert tr.exit_reason == "SL", tr.exit_reason
+    assert tr.pnl < 0
+
+    b2 = PaperBroker(PaperBrokerConfig(symbol="XAUUSD", point=0.01, digits=2))
+    b2.try_open(side="SELL", price=px, sl=px + 2.0, tp=px - 3.0, lot=0.10,
+                index=0, ts="t0")
+    tr2 = b2.manage(index=1, ts="t1", high=px + 0.5, low=px - 4.0, close=px - 3.5)
+    assert tr2.exit_reason == "TP", tr2.exit_reason
+    assert tr2.pnl > 0
+
+
+@test("sell: inverted SELL geometry is rejected before any order exists")
+def _():
+    b = PaperBroker(PaperBrokerConfig(symbol="XAUUSD", point=0.01, digits=2))
+    px = 2400.0
+    r = b.try_open(side="SELL", price=px, sl=px - 2.0, tp=px + 3.0, lot=0.10,
+                   index=0, ts="t0")          # BUY-shaped stops on a SELL
+    assert not r["ok"], r
+    assert b.position is None and b.rejected
+    errs = r.get("validation", {}).get("errors", r.get("errors", []))
+    assert any("SELL SL" in e for e in errs), errs
+
+
 def main() -> int:
     print("=" * 68)
     print("AEGIS QUANT AI - PHASE 2 TEST SUITE")

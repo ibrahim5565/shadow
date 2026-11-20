@@ -33,12 +33,17 @@ class WalkForwardResult:
     def metrics(self) -> dict:
         scored_rows = [p for p in self.predictions if p.get("scored") and p.get("forecast_price") is not None]
         scored_rows_actual = [p for p in self.predictions if p.get("scored") and p.get("actual") is not None]
+        # Origin accounting: how many walk-forward origins were attempted, how
+        # many were actually scored, and how many were dropped by the embargo.
+        origins = {"n_origins": len(self.predictions),
+                   "n_excluded_embargo": self.excluded_by_embargo}
         if not scored_rows_actual:
-            return {"n": 0, "mae": None, "rmse": None, "directional_accuracy": None, "brier": None}
+            return {"n": 0, "mae": None, "rmse": None,
+                    "directional_accuracy": None, "brier": None, **origins}
         fc = [p["forecast_price"] for p in scored_rows_actual]
         ac = [p["actual"] for p in scored_rows_actual]
         m = {"n": len(ac), "mae": mae(ac, fc), "rmse": rmse(ac, fc),
-             "directional_accuracy": directional_accuracy(ac, fc)}
+             "directional_accuracy": directional_accuracy(ac, fc), **origins}
         prob_rows = [(p.get("probability_up"), p["actual"]) for p in scored_rows_actual
                      if p.get("probability_up") is not None]
         m["brier"] = brier_score([r[0] for r in prob_rows],
@@ -80,13 +85,26 @@ class WalkForwardValidator:
                 continue
             if pred.forecast_price is None:
                 continue
+            label_idx = t + horizon
+            if label_idx > n - 1:
+                # The label bar does not exist inside this sample, so there is
+                # nothing to score and nothing to read. Reading past the end
+                # raised IndexError, which made ModelTournament discard the
+                # metrics for the WHOLE model. Origins only move forward, so
+                # stop here instead.
+                break
             # label exists at t+horizon; embargo pushes scoring boundary
-            scored = (t + horizon + self.embargo) <= (n - 1)
-            actual = float(df["close"].iloc[t + horizon])
+            scored = (label_idx + self.embargo) <= (n - 1)
+            actual = float(df["close"].iloc[label_idx])
             if scored:
                 result.actuals.append(actual)
                 if report is not None:
-                    report(pred.to_dict())
+                    # Optional observer payload: the forecast plus the realized
+                    # label and its origin, so a caller can audit per-origin
+                    # performance. Nothing here feeds back into the model.
+                    report({**pred.to_dict(), "actual": actual,
+                            "origin_index": int(t),
+                            "origin_time": str(window.index[-1])})
             row = {
                 "forecast_price": pred.forecast_price,
                 "probability_up": pred.probability_up,
