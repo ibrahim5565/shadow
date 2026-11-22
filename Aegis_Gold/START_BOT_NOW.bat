@@ -1,8 +1,5 @@
 @echo off
-echo ============================================================
-echo 🚀 STARTING AEGIS GOLD BOT
-echo ============================================================
-echo.
-cd /d "d:\Trading\Aegis_Gold"
-python SIMPLE_TRADER.py
+echo BLOCKED: legacy SIMPLE_TRADER launcher is disabled.
+echo It is not an approved Aegis execution entry point.
+echo Trading execution remains hard-disabled.
 pause
