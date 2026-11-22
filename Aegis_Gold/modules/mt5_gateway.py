@@ -62,6 +62,23 @@ class MT5Gateway:
             logger.critical("[DEMO GUARD] Verification error; blocking: %s", exc)
             return False
 
+    def _broker_request_check(self, request: dict, operation: str) -> bool:
+        """Ask the broker to validate the exact request before sending it."""
+        try:
+            checked = mt5.order_check(request)
+            if checked is None:
+                logger.error("[ORDER CHECK] %s rejected: broker returned no check result (%s)", operation, mt5.last_error())
+                return False
+            retcode = getattr(checked, "retcode", None)
+            accepted = {0, getattr(mt5, "TRADE_RETCODE_DONE", 10009)}
+            if retcode not in accepted:
+                logger.error("[ORDER CHECK] %s rejected: retcode=%s comment=%s", operation, retcode, getattr(checked, "comment", ""))
+                return False
+            return True
+        except Exception as exc:
+            logger.error("[ORDER CHECK] %s failed; blocking request: %s", operation, exc)
+            return False
+
     def _execution_permitted(self, operation: str) -> bool:
         """Require explicit opt-in plus a freshly verified DEMO account."""
         if not bool(getattr(cfg, "EXECUTION_ENABLED", False)):
@@ -546,6 +563,29 @@ class MT5Gateway:
                 logger.error(f"[ORDER REJECTED] Invalid direction: {direction}")
                 return None, 0, 0
 
+            # Broker-side stop-distance validation uses the current symbol contract.
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                logger.error("[ORDER REJECTED] Symbol contract unavailable for %s", symbol)
+                return None, 0, 0
+            min_stop_distance = float(getattr(symbol_info, "trade_stops_level", 0) or 0) * point
+            if direction == "BUY":
+                if price - request["sl"] < min_stop_distance:
+                    logger.error("[ORDER REJECTED] BUY SL violates broker stop level for %s", symbol)
+                    return None, 0, 0
+                if tp_pts > 0 and request["tp"] - price < min_stop_distance:
+                    logger.error("[ORDER REJECTED] BUY TP violates broker stop level for %s", symbol)
+                    return None, 0, 0
+            else:
+                if request["sl"] - price < min_stop_distance:
+                    logger.error("[ORDER REJECTED] SELL SL violates broker stop level for %s", symbol)
+                    return None, 0, 0
+                if tp_pts > 0 and price - request["tp"] < min_stop_distance:
+                    logger.error("[ORDER REJECTED] SELL TP violates broker stop level for %s", symbol)
+                    return None, 0, 0
+            if not self._broker_request_check(request, f"{direction} {symbol}"):
+                return None, 0, 0
+
             t0 = time.perf_counter()
             result = mt5.order_send(request)
             lat = (time.perf_counter() - t0) * 1000
@@ -692,7 +732,7 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
-            if not self._execution_permitted("close position"):
+            if not self._execution_permitted("close position") or not self._broker_request_check(request, "close position"):
                 return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
@@ -732,7 +772,7 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
-            if not self._execution_permitted("close position"):
+            if not self._execution_permitted("close position") or not self._broker_request_check(request, "close position"):
                 return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
@@ -758,7 +798,7 @@ class MT5Gateway:
                 "sl": round(new_sl, digits),
                 "tp": pos.tp,
             }
-            if not self._execution_permitted("modify stop loss"):
+            if not self._execution_permitted("modify stop loss") or not self._broker_request_check(request, "modify stop loss"):
                 return False
             result = mt5.order_send(request)
             return result and result.retcode == mt5.TRADE_RETCODE_DONE
@@ -785,7 +825,7 @@ class MT5Gateway:
                 "sl": pos.sl,                      # keep existing SL
                 "tp": round(new_tp, digits),        # update TP only
             }
-            if not self._execution_permitted("modify take profit"):
+            if not self._execution_permitted("modify take profit") or not self._broker_request_check(request, "modify take profit"):
                 return False
             result = mt5.order_send(request)
             ok = result and result.retcode == mt5.TRADE_RETCODE_DONE
