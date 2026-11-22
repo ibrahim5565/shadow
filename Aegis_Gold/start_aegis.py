@@ -97,9 +97,10 @@ logger = logging.getLogger("aegis.master")
 _shutdown_event = threading.Event()
 
 def signal_handler(signum, frame):
-    """Handle SIGTERM and SIGINT gracefully."""
+    """Convert OS stop signals into an interrupt that unwinds the trading loop."""
     logger.warning("Received signal %d. Graceful shutdown initiated...", signum)
     _shutdown_event.set()
+    raise KeyboardInterrupt
 
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
