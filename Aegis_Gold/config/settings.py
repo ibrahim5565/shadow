@@ -89,9 +89,9 @@ DAILY_PROFIT_TARGET     = 64.0  # 32 trades × $2
 XAUUSD_PIP_VALUE = 1.0          # Backward compat
 
 # ── LOT SIZING ────────────────────────────────────────────────
-BASE_LOT_DEMO = 0.10
-BASE_LOT_LIVE = 0.10
-MAX_LOT       = 0.50
+BASE_LOT_DEMO = 0.01
+BASE_LOT_LIVE = 0.01
+MAX_LOT       = 0.01
 RISK_PERCENT  = 0.01   # 1% max risk per trade
 
 # ── BRAIN THRESHOLDS (PATTERN QUALITY FOCUS) ──────────────────────────
@@ -112,7 +112,7 @@ REQUIRE_POSITIVE_EV = True        # Trade only if EV > 0 after costs
 REQUIRE_HISTORICAL_EDGE = True    # Trade only if pattern memory shows edge
 MIN_REMAINING_MOVE_PCT = 0.50     # Require 50%+ of expected move remaining
 
-# ── ABSOLUTE NEVER PAUSE SETTINGS (STRONGEST POSSIBLE) ────────────────────────
+# ── LEGACY NEVER-PAUSE FLAGS (DISABLED) ─────────────────────────────────────
 ABSOLUTE_NEVER_PAUSE       = False   # STRONGEST NEVER PAUSE MODE
 FORCE_CONTINUOUS_TRADING   = False   # FORCE CONTINUOUS - OVERRIDE ALL PAUSES
 NEVER_PAUSE_MODE           = False   # NEVER PAUSE MODE ENABLED
@@ -125,24 +125,24 @@ NEVER_STOP_TRADING         = False   # NEVER STOP TRADING
 INFINITE_TRADING_MODE      = False   # INFINITE TRADING MODE
 UNSTOPPABLE_MODE           = False   # UNSTOPPABLE MODE
 
-# ── TRADE LIMITS (UNLIMITED - NO RESTRICTIONS - NEVER PAUSE) ────────────────
+# ── CONSERVATIVE DEFAULT TRADE LIMITS (environment-overridable) ─────────────
 MIN_TRADES_PER_DAY     = 0      # No minimum
-MAX_TRADES_PER_DAY     = 999999999 # UNLIMITED - Take every opportunity
-MAX_DAILY_TRADES       = 999999999 # UNLIMITED
-MAX_OPEN_TRADES        = 999999    # UNLIMITED open positions
-MAX_OPEN_TRADES_PER_SYMBOL = 999999  # UNLIMITED positions per symbol
-MAX_CONSECUTIVE_LOSSES = 999999999 # NEVER pause - keep trading through infinite losses
-CONSECUTIVE_PAUSE_MIN  = 0      # NO pause ever
-DAILY_LOSS_LIMIT_USD   = 999999999999  # NO daily loss limit - never stop
-WEEKLY_LOSS_LIMIT_USD  = 999999999999  # NO weekly loss limit
-MONTHLY_LOSS_LIMIT_USD = 999999999999  # NO monthly loss limit
-YEARLY_LOSS_LIMIT_USD  = 999999999999  # NO yearly loss limit
+MAX_TRADES_PER_DAY     = int(os.environ.get("AEGIS_MAX_TRADES_PER_DAY", "3"))
+MAX_DAILY_TRADES       = int(os.environ.get("AEGIS_MAX_DAILY_TRADES", "3"))
+MAX_OPEN_TRADES        = int(os.environ.get("AEGIS_MAX_OPEN_TRADES", "1"))
+MAX_OPEN_TRADES_PER_SYMBOL = int(os.environ.get("AEGIS_MAX_OPEN_TRADES_PER_SYMBOL", "1"))
+MAX_CONSECUTIVE_LOSSES = int(os.environ.get("AEGIS_MAX_CONSECUTIVE_LOSSES", "2"))
+CONSECUTIVE_PAUSE_MIN  = 30
+DAILY_LOSS_LIMIT_USD   = float(os.environ.get("AEGIS_DAILY_LOSS_LIMIT_USD", "25"))
+WEEKLY_LOSS_LIMIT_USD  = float(os.environ.get("AEGIS_WEEKLY_LOSS_LIMIT_USD", "50"))
+MONTHLY_LOSS_LIMIT_USD = float(os.environ.get("AEGIS_MONTHLY_LOSS_LIMIT_USD", "100"))
+YEARLY_LOSS_LIMIT_USD  = float(os.environ.get("AEGIS_YEARLY_LOSS_LIMIT_USD", "250"))
 PAUSE_ON_LOSS          = True  # NEVER pause on losses
 PAUSE_ON_DRAWDOWN      = True  # NEVER pause on drawdown
-ENABLE_TRADING_PAUSE   = False  # Trading pause completely disabled
+ENABLE_TRADING_PAUSE   = True
 
 # AUTO-RESTART CONFIGURATION
-AUTO_RESTART_ENABLED   = True   # Enable hourly auto-restart
+AUTO_RESTART_ENABLED   = False  # Manual shutdown must not trigger an automatic restart
 AUTO_RESTART_INTERVAL  = 3600   # Restart every 1 hour (3600 seconds)
 
 # ── INSTITUTIONAL AI CONFIGURATION (ENABLE GPU TRAINING) ─────────────────────────────
@@ -172,11 +172,11 @@ MTF_MIN_ALIGNMENT = 3  # Lower alignment requirement (was 5)
 # Trade Memory
 TRADE_MEMORY_ENABLED = True  # Record all trades
 TRADE_MEMORY_AUTO_ANALYZE = True  # Analyze in background
-COOLDOWN_WIN_SEC              = 0       # NO cooldown after wins - trade immediately
-COOLDOWN_BE_SEC               = 0       # NO cooldown after breakeven - trade immediately  
-COOLDOWN_LOSS_SEC             = 0       # NO cooldown after losses - trade immediately
-COOLDOWN_AFTER_LOSS_SEC       = 0       # NO cooldown ever - continuous trading
-COOLDOWN_AFTER_CONSEC_LOSSES  = 0       # NO cooldown even after consecutive losses
+COOLDOWN_WIN_SEC              = 60
+COOLDOWN_BE_SEC               = 120  
+COOLDOWN_LOSS_SEC             = 900
+COOLDOWN_AFTER_LOSS_SEC       = 900
+COOLDOWN_AFTER_CONSEC_LOSSES  = 1800
 
 VOLATILITY_LIMITS = {
     "COMPRESSED": 2,                    # Low Volatility: max 2 open trades
@@ -185,10 +185,10 @@ VOLATILITY_LIMITS = {
     "EMERGENCY": 1                      # Emergency Conditions: max 1 open trade
 }
 
-# ── DRAWDOWN AND SAFETY LIMITS (ALL COMPLETELY DISABLED) ──────────────────
-DD_REDUCE_FREQ_PCT            = 999999999.0   # DISABLED - Never reduce frequency
-DD_BLOCK_NEW_PCT              = 999999999.0   # DISABLED - Never block trades
-DD_EMERGENCY_PCT              = 999999999.0   # DISABLED - No emergency mode
+# ── DRAWDOWN AND SAFETY LIMITS ─────────────────────────────────────────────
+DD_REDUCE_FREQ_PCT            = 2.0
+DD_BLOCK_NEW_PCT              = 4.0
+DD_EMERGENCY_PCT              = 6.0
 DRAWDOWN_PROTECTION_ENABLED   = True   # Drawdown protection completely disabled
 FORCE_NEVER_PAUSE             = False    # FORCE NEVER PAUSE - OVERRIDE ALL CONDITIONS
 IGNORE_ALL_STOP_CONDITIONS    = False    # IGNORE ALL STOP CONDITIONS
@@ -209,8 +209,8 @@ NEWS_BLACKOUT_MINUTES = 15     # 15-min blackout around high-impact news
 PATTERN_MODE          = "small_pattern"  # PRIMARY: Pattern detection | Options: "small_pattern", "smc", "unified"
 BASE_RISK_PCT         = 0.005  # 0.5% risk per trade
 MAX_RISK_PCT          = 0.01   # 1% max risk
-MIN_GAP_BETWEEN_TRADES_MIN = 0  # No gap — take every opportunity
-NO_DUPLICATE_DIRECTION_SEC     = 0      # Allow immediate direction switches - no restrictions
+MIN_GAP_BETWEEN_TRADES_MIN = 15
+NO_DUPLICATE_DIRECTION_SEC     = 300
 TRADE_COOLDOWN_ENABLED         = True  # Disable all cooldowns completely
 
 # ── SMC ENGINE SETTINGS ───────────────────────────────────────────────────────
@@ -229,12 +229,12 @@ FIRST_200_MIN_PROFIT_USD = 5.00
 FIRST_200_MIN_HOLD_SEC = 30
 FIRST_200_MAX_LOSS_USD = 10.00
 
-MAX_TRADES_PER_MINUTE  = 10    # Hard cap on trades per 60-second window
+MAX_TRADES_PER_MINUTE  = 1    # Hard cap on trades per 60-second window
 
 # ── SESSION LIMITS (no cap — market decides) ──────────────────
-ASIAN_MAX_TRADES  = 999
-LONDON_MAX_TRADES = 999
-NY_MAX_TRADES     = 999
+ASIAN_MAX_TRADES  = 3
+LONDON_MAX_TRADES = 3
+NY_MAX_TRADES     = 3
 
 # ── CANDLE TIMEFRAMES ────────────────────────────────────────
 CANDLE_TIMEFRAME = "M5"
