@@ -2181,7 +2181,7 @@ async def main_loop():
                             # Get candles_m1 for the candidate (if available) or copy from MT5
                             try:
                                 import MetaTrader5 as mt5
-                                c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 1, 30)
                                 if c_m1 is None:
                                     c_m1 = candles_m1
                             except Exception:
@@ -2455,7 +2455,7 @@ async def main_loop():
                                 # Get candles_m1 for the candidate (if available) or copy from MT5
                                 try:
                                     import MetaTrader5 as mt5
-                                    c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                    c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 1, 30)
                                     if c_m1 is None:
                                         c_m1 = candles_m1
                                 except Exception:
