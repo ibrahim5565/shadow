@@ -354,6 +354,13 @@ class RiskManager:
         self.check_auto_resume()  # Check if we should auto-resume from pause
         if self.is_locked() or self.stop_today or self.manual_pause or self.is_paused:
             return False
+
+        # Enforce hard daily-loss, daily-trade, and session-trade limits here,
+        # not only in upstream callers.
+        if self.is_daily_loss_limit_reached(current_equity if current_equity > 0 else None):
+            return False
+        if not self.daily_trades_ok() or not self.session_trades_ok(session):
+            return False
         
         # Enforce 45-minute session refresh block
         if session_refresh_active:
