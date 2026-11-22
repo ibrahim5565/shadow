@@ -298,7 +298,7 @@ class MT5Gateway:
     def get_candles_m5(self, symbol: str, count: int = 100):
         """Fetch M5 OHLC candles for a symbol."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m5_{symbol}", str(exc))
@@ -307,7 +307,7 @@ class MT5Gateway:
     def get_candles_m1(self, symbol: str, count: int = 20):
         """Fetch M1 OHLC candles for breakout detection."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m1_{symbol}", str(exc))
@@ -316,7 +316,7 @@ class MT5Gateway:
     def get_candles_m15(self, symbol: str, count: int = 50):
         """Fetch M15 OHLC candles for pattern context analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m15_{symbol}", str(exc))
@@ -325,7 +325,7 @@ class MT5Gateway:
     def get_candles_m30(self, symbol: str, count: int = 40):
         """Fetch M30 OHLC candles for swing structure analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M30, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M30, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m30_{symbol}", str(exc))
@@ -334,7 +334,7 @@ class MT5Gateway:
     def get_candles_h1(self, symbol: str, count: int = 30):
         """Fetch H1 OHLC candles for session trend analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_h1_{symbol}", str(exc))
@@ -343,7 +343,7 @@ class MT5Gateway:
     def get_candles_h4(self, symbol: str, count: int = 24):
         """Fetch H4 OHLC candles for institutional bias analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_h4_{symbol}", str(exc))
