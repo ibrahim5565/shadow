@@ -1,8 +1,5 @@
 @echo off
-cd /d "d:\Trading\Aegis_Gold"
-del /Q data\*.lock 2>nul
-taskkill /F /IM python.exe 2>nul
-timeout /t 2 /nobreak >nul
-echo Starting bot...
-python SIMPLE_BOT.py
+echo BLOCKED: legacy SIMPLE_BOT launcher is disabled.
+echo Use START_AEGIS.bat only after reviewing the safety-hardening branch.
+echo Trading execution remains hard-disabled.
 pause
