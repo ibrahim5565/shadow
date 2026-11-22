@@ -414,24 +414,43 @@ class MT5Gateway:
         except Exception:
             pass
 
-        if not min_lot  or min_lot  <= 0: min_lot  = 0.01
-        if not max_lot  or max_lot  <= 0: max_lot  = 100.0
-        if not lot_step or lot_step <= 0: lot_step = 0.01
+        if not min_lot or min_lot <= 0:
+            min_lot = 0.01
+        if not max_lot or max_lot <= 0:
+            max_lot = 100.0
+        if not lot_step or lot_step <= 0:
+            lot_step = 0.01
 
-        # Clamp volume to [min_lot, max_lot]
-        volume = max(min_lot, min(max_lot, float(volume)))
+        # Apply both global and per-symbol strategy caps. Never round upward
+        # beyond the configured risk cap or silently exceed broker minimums.
+        symbol_cfg = cfg.get_symbol_config(symbol)
+        configured_cap = min(
+            float(getattr(cfg, "MAX_LOT", 0.01)),
+            float(symbol_cfg.get("max_lot", getattr(cfg, "MAX_LOT", 0.01))),
+        )
+        effective_max = min(float(max_lot), configured_cap)
+        if configured_cap <= 0 or float(min_lot) > effective_max:
+            raise ValueError(
+                f"Broker minimum lot {min_lot} exceeds configured risk cap "
+                f"{configured_cap} for {symbol}; refusing order"
+            )
 
-        # Round volume to lot_step
-        if lot_step > 0:
-            steps = round(volume / lot_step)
-            volume = steps * lot_step
+        requested = float(volume)
+        if requested <= 0:
+            raise ValueError(f"Requested lot must be positive, got {requested}")
+        volume = min(effective_max, max(float(min_lot), requested))
 
-        # Precision calculation
-        step_str = f"{lot_step:.8f}".rstrip("0")
-        decimals = len(step_str.split(".")[1]) if "." in step_str else 2
-        decimals = min(decimals, 8)
+        # Floor to the broker's volume step to avoid rounding above the cap.
+        steps = int((volume + 1e-12) / float(lot_step))
+        volume = steps * float(lot_step)
+        step_str = f"{float(lot_step):.8f}".rstrip("0")
+        decimals = min(len(step_str.split(".")[1]) if "." in step_str else 2, 8)
         norm_vol = round(volume, decimals)
-        return max(min_lot, norm_vol)
+        if norm_vol < float(min_lot) or norm_vol > effective_max + 1e-12:
+            raise ValueError(
+                f"Normalized lot {norm_vol} violates [{min_lot}, {effective_max}] for {symbol}"
+            )
+        return norm_vol
 
     # ── order execution ────────────────────────────────────────
 
