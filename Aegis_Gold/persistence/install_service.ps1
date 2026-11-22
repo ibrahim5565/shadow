@@ -90,6 +90,9 @@ switch ($Action.ToLower()) {
         # Set working directory
         nssm set $ServiceName AppDirectory $ProjectDir
         
+        # Manual start only; do not auto-start the trading process on Windows boot.
+        nssm set $ServiceName Start SERVICE_DEMAND_START
+
         # Set output log files
         nssm set $ServiceName AppStdout $(Join-Path $LogDir "stdout.log")
         nssm set $ServiceName AppStderr $(Join-Path $LogDir "stderr.log")
