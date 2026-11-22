@@ -2163,17 +2163,13 @@ async def main_loop():
                     session = primary_cand["session"]
                     ai_approved = primary_cand["ai_approved"]
                     
-                    # Final entry gate checks
-                    # v6.1 FIX: 'demo_unrestricted_active' was referenced but never
-                    # defined -> NameError crashed the main loop every cycle right
-                    # before execution ("Main loop error: name 'demo_unrestricted_active'
-                    # is not defined"), so queued TRADE signals were NEVER executed.
-                    # Define it from the flag: unrestricted entry gates in DEMO mode
-                    # only; LIVE mode always keeps cooldown + risk gates.
-                    demo_unrestricted_active = bool(getattr(cfg, "DEMO_MODE", True)) and bool(QX.flag("demo_unrestricted_mode"))
-                    can_execute_entry = (len(positions) < max_open_trades_limit)
-                    if not demo_unrestricted_active:
-                        can_execute_entry = can_execute_entry and check_cooldown() and risk.can_trade(session, symbol=sym, current_equity=equity)
+                    # Final entry gate: no DEMO-mode bypasses. Every candidate
+                    # must pass position limits, cooldown, and the normal risk manager.
+                    can_execute_entry = (
+                        len(positions) < max_open_trades_limit
+                        and check_cooldown()
+                        and risk.can_trade(session, symbol=sym, direction=decision.direction, current_equity=equity)
+                    )
 
                     if can_execute_entry:
                         # Run LLM Trading Analyst Vetting
