@@ -545,11 +545,15 @@ class MT5Gateway:
         logger.info("[OK] [SL SAFETY VERIFICATION PASSED] Mandatory broker-side SL floor active for all symbols.")
         return True
 
-    def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int):
+    def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int, session: str = "LONDON"):
         """Execute market order for a specific symbol with mandatory hard SL enforcement."""
         try:
             if not self._execution_permitted("open order"):
                 return None, 0, 0
+            precheck = self.pre_execution_check(symbol, direction, session=session, lot=lot)
+            if not precheck.get("ok"):
+                logger.warning("[PRE-EXECUTION BLOCK] %s %s: %s", direction, symbol, precheck.get("reason"))
+                return None, float(precheck.get("latency_ms", 0.0)), 0
             tick = mt5.symbol_info_tick(symbol)
             if tick is None or symbol not in self.symbols_data:
                 return None, 0, 0
@@ -635,6 +639,7 @@ class MT5Gateway:
         direction: str,
         session: str = "LONDON",
         latency_abort_ms: float = 100.0,
+        lot: float = 0.01,
     ) -> dict:
         """
         Zero-Bypass pre-execution safety check (Phase 4 — Sniper Mode).
@@ -676,29 +681,30 @@ class MT5Gateway:
         # 3. Spread Check
         try:
             sym_info = mt5.symbol_info(symbol)
-            if sym_info:
-                spread_pts = sym_info.spread
-                spread_limit = cfg.SPREAD_LIMITS.get(session, 40)
-                if spread_pts > spread_limit:
+            if sym_info is None:
+                return {"ok": False, "reason": f"SYMBOL_INFO_UNAVAILABLE:{symbol}", "latency_ms": lat_ms, "spread": 0.0}
+            spread_pts = sym_info.spread
+            spread_limit = cfg.SPREAD_LIMITS.get(session, 40)
+            if spread_pts > spread_limit:
                     return {
                         "ok": False,
                         "reason": f"SPREAD_TOO_WIDE:{spread_pts}pts>{spread_limit}pts({session})",
                         "latency_ms": lat_ms,
                         "spread": float(spread_pts),
                     }
-            else:
-                spread_pts = 0
         except Exception as _sp:
-            spread_pts = 0
+            return {"ok": False, "reason": f"SPREAD_CHECK_ERROR:{_sp}", "latency_ms": lat_ms, "spread": 0.0}
 
         # 4. Margin Check (0.01 lot minimum)
         try:
             price = tick.ask if direction == "BUY" else tick.bid
             margin_req = mt5.order_calc_margin(
                 mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
-                symbol, 0.01, price
+                symbol, lot, price
             )
-            if margin_req is not None and acct.margin_free < margin_req:
+            if margin_req is None:
+                return {"ok": False, "reason": "MARGIN_CALCULATION_UNAVAILABLE", "latency_ms": lat_ms, "spread": float(spread_pts)}
+            if acct.margin_free < margin_req:
                 return {
                     "ok": False,
                     "reason": f"INSUFFICIENT_MARGIN:free={acct.margin_free:.2f}<required={margin_req:.2f}",
@@ -706,7 +712,7 @@ class MT5Gateway:
                     "spread": float(spread_pts),
                 }
         except Exception as _me:
-            logger.debug(f"[PRE_CHECK] Margin check error (non-fatal): {_me}")
+            return {"ok": False, "reason": f"MARGIN_CHECK_ERROR:{_me}", "latency_ms": lat_ms, "spread": float(spread_pts)}
 
         lat_ms = (_time.perf_counter() - t_start) * 1000
         return {"ok": True, "reason": "PRE_CHECK_PASS", "latency_ms": lat_ms, "spread": float(spread_pts)}
