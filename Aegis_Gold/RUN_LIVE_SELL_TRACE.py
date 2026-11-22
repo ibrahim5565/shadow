@@ -87,14 +87,14 @@ forensic_logger.info("✓ brain.decide patched")
 from modules.mt5_gateway import MT5Gateway
 original_execute_order = MT5Gateway.execute_order
 
-def traced_execute_order(self, symbol, direction, lot, tp_pts, sl_pts, price=None, type_filling=None):
+def traced_execute_order(self, symbol, direction, lot, tp_pts, sl_pts, session="LONDON"):
     """Traced version of execute_order"""
     
     forensic_logger.info(f"\n>>> MT5 EXECUTION REQUEST: {direction} {symbol} lot={lot} sl={sl_pts} tp={tp_pts}")
     
     # Build order request first
     try:
-        order_request = self.build_order_request(symbol, direction, lot, tp_pts, sl_pts, price, type_filling)
+        order_request = self.build_order_request(symbol, direction, lot, tp_pts, sl_pts)
         
         # Create a mock authorization for tracing
         from dataclasses import dataclass
@@ -121,7 +121,7 @@ def traced_execute_order(self, symbol, direction, lot, tp_pts, sl_pts, price=Non
         forensic_logger.error(f"❌ Order construction failed: {e}")
     
     # Call original
-    result, latency, slippage = original_execute_order(self, symbol, direction, lot, tp_pts, sl_pts, price, type_filling)
+    result, latency, slippage = original_execute_order(self, symbol, direction, lot, tp_pts, sl_pts, session)
     
     # Trace result
     if result:
