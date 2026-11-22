@@ -25,6 +25,7 @@ def test_wait_confidence_zero():
     This test verifies the requirement: "A WAIT with no pattern must keep trade confidence = 0."
     """
     # Generate flat/noisy data (no clear patterns)
+    np.random.seed(42)  # Deterministic synthetic candles.
     base_time = 1700000000.0
     bar_duration = 300  # 5 minutes
     
