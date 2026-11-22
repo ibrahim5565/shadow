@@ -129,6 +129,7 @@ class RiskManager:
             loss_usd = self.start_equity - eq
             if loss_usd >= self.DAILY_MAX_LOSS_USD:
                 self.stop_today = True
+                self._create_lockfile()  # Persist daily loss stop across process restarts.
                 self._alert(
                     f"🚨 [CIRCUIT BREAKER] Daily loss limit reached: -${loss_usd:.2f} >= ${self.DAILY_MAX_LOSS_USD:.2f}. "
                     f"Trading halted for remainder of the day."
@@ -171,8 +172,9 @@ class RiskManager:
                 self._alert("Lockfile expired — auto-unlocked")
                 return False
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            logger.critical("Risk lockfile unreadable; failing closed: %s", exc)
+            return True
 
     def force_unlock(self):
         if os.path.exists(LOCKFILE):
