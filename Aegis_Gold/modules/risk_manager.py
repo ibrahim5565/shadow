@@ -110,7 +110,7 @@ class RiskManager:
 
     # ── LAYER 1: Daily Drawdown Kill Switch ───────────────────
 
-    DAILY_MAX_LOSS_USD: float = 500.0  # Hard dollar loss limit per trading day
+    DAILY_MAX_LOSS_USD: float = float(getattr(cfg, 'DAILY_LOSS_LIMIT_USD', 25.0))
 
     def is_daily_loss_limit_reached(self, current_equity: Optional[float] = None) -> bool:
         """Checks if daily loss circuit breaker has triggered."""
