@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
 from config import settings as cfg
+from quant_ai.execution.demo_guard import DemoGuard
 
 logger = logging.getLogger("aegis.mt5")
 
@@ -38,6 +39,35 @@ class MT5Gateway:
         self._tg_send = None
 
     # ── helpers ────────────────────────────────────────────────
+
+    def _demo_account_verified(self) -> bool:
+        """Fail closed unless MT5 confirms the connected account is DEMO."""
+        try:
+            account = mt5.account_info()
+            demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
+            if account is None or demo_mode is None:
+                logger.critical("[DEMO GUARD] Account or DEMO trade-mode constant unavailable")
+                return False
+            guard = DemoGuard(
+                trading_mode="DEMO" if getattr(cfg, "DEMO_MODE", False) else "LIVE",
+                allow_live=not bool(getattr(cfg, "DEMO_MODE", False)),
+                demo_trade_mode=demo_mode,
+            )
+            verdict = guard.check(account)
+            if not verdict.get("ok"):
+                logger.critical("[DEMO GUARD] BLOCKED: %s", verdict.get("reason"))
+                return False
+            return True
+        except Exception as exc:
+            logger.critical("[DEMO GUARD] Verification error; blocking: %s", exc)
+            return False
+
+    def _execution_permitted(self, operation: str) -> bool:
+        """Require explicit opt-in plus a freshly verified DEMO account."""
+        if not bool(getattr(cfg, "EXECUTION_ENABLED", False)):
+            logger.warning("[EXECUTION DISABLED] %s blocked: AEGIS_DEMO_EXECUTION_ENABLED is not true", operation)
+            return False
+        return self._demo_account_verified()
 
     def set_telegram_callback(self, fn):
         """Inject a non-blocking Telegram send function."""
@@ -134,6 +164,10 @@ class MT5Gateway:
                     server=cfg.MT5_SERVER,
                 )
                 if ok:
+                    if not self._demo_account_verified():
+                        logger.critical("Connected MT5 account is not verifiably DEMO; shutting down")
+                        mt5.shutdown()
+                        return False
                     self._detect_all_symbols()
                     self._cache_symbols_info()
                     sym_list = ", ".join(self.active_symbols)
@@ -473,6 +507,8 @@ class MT5Gateway:
     def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int):
         """Execute market order for a specific symbol with mandatory hard SL enforcement."""
         try:
+            if not self._execution_permitted("open order"):
+                return None, 0, 0
             tick = mt5.symbol_info_tick(symbol)
             if tick is None or symbol not in self.symbols_data:
                 return None, 0, 0
@@ -656,6 +692,8 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
+            if not self._execution_permitted("close position"):
+                return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
         except Exception as exc:
@@ -694,6 +732,8 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
+            if not self._execution_permitted("close position"):
+                return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
         except Exception as exc:
@@ -718,6 +758,8 @@ class MT5Gateway:
                 "sl": round(new_sl, digits),
                 "tp": pos.tp,
             }
+            if not self._execution_permitted("modify stop loss"):
+                return False
             result = mt5.order_send(request)
             return result and result.retcode == mt5.TRADE_RETCODE_DONE
         except Exception:
@@ -743,6 +785,8 @@ class MT5Gateway:
                 "sl": pos.sl,                      # keep existing SL
                 "tp": round(new_tp, digits),        # update TP only
             }
+            if not self._execution_permitted("modify take profit"):
+                return False
             result = mt5.order_send(request)
             ok = result and result.retcode == mt5.TRADE_RETCODE_DONE
             if ok:
