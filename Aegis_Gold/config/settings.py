@@ -6,7 +6,7 @@ load_dotenv()
 # ── MODE ──────────────────────────────────────────────────────
 DEMO_MODE = True  # This project is restricted to DEMO accounts.
 # Order execution stays disabled until a separately reviewed DEMO test is approved.
-EXECUTION_ENABLED = os.environ.get("AEGIS_DEMO_EXECUTION_ENABLED", "false").strip().lower() == "true"
+EXECUTION_ENABLED = False  # HARD LOCK: do not enable until the demo-only audit is signed off.
 
 # ── MT5 CONNECTION CONFIGURATION ────────────────────────────────
 # Credentials read from .env (never hardcode in source)
