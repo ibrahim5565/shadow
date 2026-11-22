@@ -56,10 +56,9 @@ def detect_patterns_closed_candles_only(
     if len(candles) < 10:
         return results
     
-    # Scan each closed candle (iterate through history)
-    # For historical data, all bars are closed
-    # We still exclude the last bar to simulate live behavior (index -1 = forming)
-    closed_candles = candles.iloc[:-1] if len(candles) > 1 else candles
+    # Gateway inputs are already closed-candle-only (MT5 start_pos=1).
+    # Do not drop the newest supplied bar a second time.
+    closed_candles = candles
     
     for i in range(len(closed_candles)):
         # Get window up to and including current bar
