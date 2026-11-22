@@ -1,0 +1,37 @@
+name: Aegis safety checks
+
+on:
+  push:
+    branches:
+      - "aegis/safety-hardening"
+  pull_request:
+    branches:
+      - "shadow"
+
+jobs:
+  static-and-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependencies
+        run: python -m pip install --upgrade pip pytest numpy pandas python-dotenv
+      - name: Compile changed application packages
+        run: |
+          python -m compileall -q Aegis_Gold/brain
+          python -m compileall -q Aegis_Gold/core
+          python -m compileall -q Aegis_Gold/modules
+          python -m compileall -q Aegis_Gold/quant_ai
+          python -m py_compile Aegis_Gold/start_aegis.py Aegis_Gold/watchdog.py
+      - name: Run safety regression tests
+        run: |
+          pytest -q \
+            Aegis_Gold/tests/test_demo_guard_fail_closed.py \
+            Aegis_Gold/tests/test_demo_unrestricted_mode.py \
+            Aegis_Gold/tests/test_pattern_audit_buy_sell_symmetry.py \
+            Aegis_Gold/tests/test_pattern_audit_no_lookahead.py \
+            Aegis_Gold/tests/test_pattern_audit_wait_confidence_zero.py
