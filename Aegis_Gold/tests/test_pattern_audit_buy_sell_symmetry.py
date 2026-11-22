@@ -24,6 +24,7 @@ def test_buy_sell_symmetry():
     
     Generate data with clear uptrend and downtrend sections.
     """
+    np.random.seed(42)  # Deterministic synthetic candles for reproducible tests.
     base_time = 1700000000.0
     bar_duration = 300  # 5 minutes
     
