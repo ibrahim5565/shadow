@@ -206,7 +206,7 @@ class RiskManager:
                         is_demo = False
 
                 from config.quant_x_config import QX
-                unrestricted_demo = (QX.get("demo_unrestricted_mode", False) and is_demo) or getattr(cfg, "FORCE_NEVER_PAUSE", False) or getattr(cfg, "MAXIMUM_TRADING_MODE", False)
+                unrestricted_demo = False  # Unrestricted loss-pause bypass is prohibited.
 
                 if unrestricted_demo:
                     logger.warning(
@@ -368,15 +368,8 @@ class RiskManager:
 
     def can_trade(self, session: str = "LONDON", symbol: str = "", direction: str = "", 
                   current_equity: float = 0.0, session_refresh_active: bool = False) -> bool:
-        if getattr(cfg, "FORCE_NEVER_PAUSE", False) or getattr(cfg, "MAXIMUM_TRADING_MODE", False):
-            self.is_paused = False
-            self.manual_pause = False
-            self.stop_today = False
-            self.consecutive_losses = 0
-            return True
-
         self.check_auto_resume()  # Check if we should auto-resume from pause
-        if self.is_locked() or self.stop_today or self.manual_pause:
+        if self.is_locked() or self.stop_today or self.manual_pause or self.is_paused:
             return False
         
         # Enforce 45-minute session refresh block
