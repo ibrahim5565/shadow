@@ -1,5 +1,3 @@
-from brain.ABSOLUTE_NEVER_PAUSE_ENFORCER import activate_absolute_never_pause
-
 """
 Aegis-Gold v6.0 — Autonomous Watchdog
 Monitors core/main.py and ensures it runs 24/7.
@@ -167,51 +165,11 @@ def find_bot_process(bot_pid):
 
 
 def _flatten_all_positions_emergency():
-    """Emergency flatten: connects to MT5 and closes all open positions on XAUUSD/EURUSD."""
-    logger.critical("[WATCHDOG] Emergency flatten sequence triggered!")
-    try:
-        import MetaTrader5 as mt5
-        if not mt5.initialize():
-            logger.error("[WATCHDOG] MT5 initialization failed for emergency flatten")
-            return
-        
-        positions = mt5.positions_get()
-        if positions:
-            for pos in positions:
-                ticket = pos.ticket
-                symbol = pos.symbol
-                lot = pos.volume
-                # mt5.POSITION_TYPE_BUY = 0, mt5.POSITION_TYPE_SELL = 1
-                order_type = mt5.ORDER_TYPE_SELL if pos.type == 0 else mt5.ORDER_TYPE_BUY
-                
-                # Fetch current tick for pricing
-                tick = mt5.symbol_info_tick(symbol)
-                if tick is None:
-                    logger.error(f"[WATCHDOG] Failed to get tick for {symbol} to close position {ticket}")
-                    continue
-                price = tick.ask if order_type == mt5.ORDER_TYPE_BUY else tick.bid
-                
-                request = {
-                    "action": mt5.TRADE_ACTION_DEAL,
-                    "symbol": symbol,
-                    "volume": lot,
-                    "type": order_type,
-                    "position": ticket,
-                    "price": price,
-                    "deviation": 20,
-                    "magic": 999999,
-                    "comment": "Watchdog Emergency Flatten",
-                    "type_time": mt5.ORDER_TIME_GTC,
-                    "type_filling": mt5.ORDER_FILLING_IOC,
-                }
-                res = mt5.order_send(request)
-                if res.retcode != mt5.TRADE_RETCODE_DONE:
-                    logger.error(f"[WATCHDOG] Failed to close position {ticket}: {res.comment}")
-                else:
-                    logger.info(f"[WATCHDOG] Closed position {ticket} successfully")
-        mt5.shutdown()
-    except Exception as e:
-        logger.error(f"[WATCHDOG] Error during emergency flatten: {e}")
+    """Disabled: watchdog must never send orders or flatten account positions."""
+    logger.critical(
+        "[WATCHDOG] Emergency flatten is disabled. Manage any open position "
+        "through the verified broker terminal; watchdog has no order authority."
+    )
 
 
 def monitor_and_wait(process):
@@ -337,70 +295,21 @@ def run_bot():
 
 
 def main():
+    """Run one watchdog session; never auto-restart the bot after exit."""
     acquire_lock()
-
-    logger.info("═══ AEGIS WATCHDOG v6.0 ACTIVE ═══")
-    send_telegram("🚀 <b>[WATCHDOG] Active</b>\nAegis-Gold Autonomous Watchdog is online and monitoring.")
-
-
-
-    restart_count = 0
-    last_restart_day = datetime.now().day
-
-    while True:
-        try:
-            current_day = datetime.now().day
-            if current_day != last_restart_day:
-                restart_count = 0
-                last_restart_day = current_day
-                logger.info("New day: restart counter reset.")
-
-            if restart_count >= MAX_RESTARTS:
-                logger.critical("EXCEEDED MAX DAILY RESTARTS. Safety shutdown.")
-                send_telegram("🚨 <b>[WATCHDOG] Safety Shutdown</b>\nExceeded 50 daily restarts.")
-                sys.exit(1)
-
-            exit_code = run_bot()
-
-            if exit_code == 0:
-                logger.info("Normal shutdown. Exiting watchdog.")
-                break
-
-            restart_count += 1
-            logger.info(f"Restarting in {RESTART_DELAY}s (Attempt {restart_count}/{MAX_RESTARTS})")
-            time.sleep(RESTART_DELAY)
-
-        except KeyboardInterrupt:
-            logger.info("Watchdog stopped by user.")
-            break
-        except Exception as e:
-            # Watchdog loop itself crashed — log it and keep going
-            logger.critical(f"WATCHDOG INTERNAL ERROR (self-healing): {e}", exc_info=True)
-            send_telegram(f"⚠️ <b>[WATCHDOG] Internal Error — Self-Healing</b>\n<code>{e}</code>")
-            time.sleep(5)
+    logger.info("Aegis watchdog active in monitor-only mode; automatic bot restart is disabled.")
+    send_telegram("🛡️ <b>[WATCHDOG] Monitor-only mode</b>\nAutomatic restart and emergency order execution are disabled.")
+    try:
+        exit_code = run_bot()
+        if exit_code == 0:
+            logger.info("Bot stopped gracefully.")
+        else:
+            logger.error("Bot exited with code %s. Manual review required; not restarting.", exit_code)
+    except KeyboardInterrupt:
+        logger.info("Watchdog stopped by user.")
+    finally:
+        logger.info("Watchdog session ended; no child process will be restarted.")
 
 
 if __name__ == "__main__":
-    # ACTIVATE ABSOLUTE NEVER PAUSE
-    activate_absolute_never_pause()
-    # Outer self-healing wrapper: if the watchdog itself crashes fatally,
-    # it respawns itself so the bot is NEVER left unmonitored.
-    import subprocess
-    _self = os.path.abspath(__file__)
-    _python = sys.executable
-    while True:
-        try:
-            main()
-            break  # Clean exit — don't respawn
-        except SystemExit as e:
-            if e.code == 0:
-                break  # Normal shutdown
-            logger.critical(f"Watchdog exited with code {e.code}. Check logs.")
-            break
-        except Exception as e:
-            logger.critical(f"WATCHDOG FATAL CRASH: {e}. Respawning in 10s...", exc_info=True)
-            time.sleep(10)
-            # Respawn self as new process and exit current one
-            subprocess.Popen([_python, _self])
-            break
-
+    main()
