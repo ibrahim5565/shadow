@@ -29,9 +29,10 @@ from datetime import datetime, timezone
 # ── Force HuggingFace Offline Mode ─────────────────────────────────────────
 # Prevents Kronos/Transformers from making network calls to huggingface.co
 # The bot always operates in local statistical fallback mode — no cloud needed
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
-os.environ.setdefault("HUGGINGFACE_HUB_VERBOSITY", "error")
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["HUGGINGFACE_HUB_VERBOSITY"] = "error"
 
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
