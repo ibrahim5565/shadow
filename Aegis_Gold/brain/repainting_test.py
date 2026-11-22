@@ -266,7 +266,7 @@ class RepaintingTest:
             all_results.append({
                 "test_case_index": i,
                 "symbol": test_case['symbol'],
-                "decision_time': test_case['decision_time'].isoformat(),
+                "decision_time": test_case['decision_time'].isoformat(),
                 "results": result
             })
         
