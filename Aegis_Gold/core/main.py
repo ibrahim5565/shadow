@@ -2782,7 +2782,7 @@ def main():
 
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
     flask_thread = threading.Thread(
-        target=lambda: api.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False),
+        target=lambda: api.run(host='127.0.0.1', port=5001, debug=False, use_reloader=False),
         daemon=True,
     )
     flask_thread.start()
