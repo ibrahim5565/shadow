@@ -201,32 +201,13 @@ class RiskManager:
             self.today_losses       += 1
             self.last_loss_time     = time.time()  # Track loss time for cooldown
             if self.consecutive_losses >= cfg.MAX_CONSECUTIVE_LOSSES:
-                is_demo = True
-                if self.gateway and hasattr(self.gateway, "get_account_info"):
-                    acct = self.gateway.get_account_info()
-                    if acct and (str(acct.get("trade_mode", "")).upper() in ("REAL", "LIVE")):
-                        is_demo = False
-
-                from config.quant_x_config import QX
-                unrestricted_demo = False  # Unrestricted loss-pause bypass is prohibited.
-
-                if unrestricted_demo:
-                    logger.warning(
-                        "[TESTING MODE] %d consecutive losses — auto-pause BYPASSED for continuous testing data collection.",
-                        self.consecutive_losses
-                    )
-                    self._alert(
-                        f"ℹ️ <b>[TESTING MODE]</b> {self.consecutive_losses} consecutive losses.\n"
-                        f"Auto-pause PERMANENTLY BYPASSED for testing mode. Bot remains 100% active."
-                    )
-                else:
-                    self.is_paused = True
-                    self.pause_until = time.time() + cfg.COOLDOWN_AFTER_CONSEC_LOSSES
-                    self._alert(
-                        f"⏸ PAUSE — {self.consecutive_losses} consecutive losses.\n"
-                        f"Cooling down for {cfg.COOLDOWN_AFTER_CONSEC_LOSSES}s.\n"
-                        f"Send /resume to override."
-                    )
+                self.is_paused = True
+                self.pause_until = time.time() + cfg.COOLDOWN_AFTER_CONSEC_LOSSES
+                self._alert(
+                    f"⏸ PAUSE — {self.consecutive_losses} consecutive losses.\n"
+                    f"Cooling down for {cfg.COOLDOWN_AFTER_CONSEC_LOSSES}s.\n"
+                    f"Send /resume to override."
+                )
 
     def check_auto_resume(self):
         if self.stop_today or self.manual_pause:
