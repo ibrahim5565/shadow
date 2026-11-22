@@ -2320,6 +2320,7 @@ async def main_loop():
                             decision.lot,
                             decision.tp_points,
                             decision.sl_points,
+                            session,
                         )
 
                         last_latency = latency
@@ -2565,6 +2566,7 @@ async def main_loop():
                                 decision.lot,
                                 decision.tp_points,
                                 decision.sl_points,
+                                session,
                             )
                             last_latency = latency
 
