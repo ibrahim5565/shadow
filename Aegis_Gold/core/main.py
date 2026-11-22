@@ -30,7 +30,6 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
 # ── Path fix ───────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.ABSOLUTE_NEVER_PAUSE_ENFORCER import activate_absolute_never_pause
 
 # ── Project root (BASE_DIR) ────────────────────────────────────
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -2810,6 +2809,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # ACTIVATE ABSOLUTE NEVER PAUSE
-    activate_absolute_never_pause()
     main()
