@@ -1,5 +1,3 @@
-from brain.ABSOLUTE_NEVER_PAUSE_ENFORCER import activate_absolute_never_pause
-
 """
 The Brain Decision Engine v5.0 — EQS-Gated Multi-Path Engine
 
