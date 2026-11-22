@@ -377,7 +377,12 @@ class MT5Gateway:
                     "equity": info.equity,
                     "balance": info.balance,
                     "margin_free": info.margin_free,
+                    "margin": info.margin,
+                    "margin_level": info.margin_level,
                     "profit": info.profit,
+                    "login": info.login,
+                    "server": info.server,
+                    "trade_mode": info.trade_mode,
                 }
             return None
         except Exception as exc:
