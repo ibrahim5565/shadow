@@ -8,7 +8,8 @@ cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$root = [IO.Path]::GetFullPath((Get-Location).Path); " ^
   "$procs = Get-CimInstance Win32_Process | Where-Object { " ^
-  "($_.Name -in @('python.exe','pythonw.exe')) -and $_.CommandLine -and $_.CommandLine.Contains($root) }; " ^
+  "($_.Name -in @('python.exe','pythonw.exe')) -and $_.CommandLine -and " ^
+  "($_.CommandLine.Contains($root) -or $_.CommandLine -match '(start_aegis\\.py|watchdog\\.py|core[\\\\/]main\\.py)') }; " ^
   "$procs | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; " ^
   "Write-Host ('Stopped ' + @($procs).Count + ' Aegis Python process(es).')"
 if exist "data\bot.lock" del /f "data\bot.lock"
