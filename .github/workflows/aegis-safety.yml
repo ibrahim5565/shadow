@@ -34,4 +34,5 @@ jobs:
             Aegis_Gold/tests/test_demo_unrestricted_mode.py \
             Aegis_Gold/tests/test_pattern_audit_buy_sell_symmetry.py \
             Aegis_Gold/tests/test_pattern_audit_no_lookahead.py \
-            Aegis_Gold/tests/test_pattern_audit_wait_confidence_zero.py
+            Aegis_Gold/tests/test_pattern_audit_wait_confidence_zero.py \
+            Aegis_Gold/tests/test_wait_confidence_invariant.py
