@@ -23,6 +23,7 @@ def test_no_lookahead_bias():
     Test that pattern detection at bar t doesn't change when future bars (t+1, t+2...) change.
     """
     # Generate base data (100 bars)
+    np.random.seed(42)  # Deterministic synthetic candles.
     base_time = 1700000000.0
     bar_duration = 300  # 5 minutes
     
