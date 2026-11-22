@@ -575,7 +575,7 @@ def _attach_authorization(decision, symbol: str, candles_m5, spread: float, poin
             action="WAIT",
             direction=decision.direction,
             lot=lot,
-            confidence=decision.confidence,
+            confidence=0,
             grade=decision.grade,
             reason=f"AUTHORIZATION_FAILED: {reason_code}",
             thought_log=getattr(decision, "thought_log", []),
@@ -617,6 +617,7 @@ def verify_direction_integrity(decision) -> bool:
             f"direction={final_dir}). DO NOT TRADE."
         )
         decision.action = "WAIT"
+        decision.confidence = 0
         decision.reason = "DIRECTION_INTEGRITY_FAILURE: no authoritative pattern direction"
         return False
 
@@ -626,6 +627,7 @@ def verify_direction_integrity(decision) -> bool:
             f"but final decision.direction={final_dir}. DO NOT TRADE."
         )
         decision.action = "WAIT"
+        decision.confidence = 0
         decision.reason = (
             f"DIRECTION_INTEGRITY_FAILURE: pattern={pattern_dir}, final={final_dir}"
         )
@@ -1445,6 +1447,10 @@ def decide(ticks=None, candles_m5=None, account: dict = None, risk_mgr=None, ses
         )
     except Exception as _log_ex:
         logger.debug(f"Closed candle log formatting error: {_log_ex}")
+
+    # Invariant: WAIT/BLOCK decisions are never presented with trade confidence.
+    if getattr(decision, "action", "WAIT") != "TRADE":
+        decision.confidence = 0
 
     try:
         log_decision(decision)
