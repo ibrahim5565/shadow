@@ -1861,9 +1861,15 @@ async def main_loop():
                         telegram.send("▶️ Manual pause cleared. Risk gates remain active.")
                     else:
                         telegram.send("⛔ Resume blocked: daily-loss risk lock is active.")
-                elif cmd == "/closeall": 
-                    gateway.close_all_positions()
-                    telegram.send("🗑️ Close-all command sent.")
+                elif cmd == "/closeall":
+                    close_result = gateway.close_all_positions()
+                    if close_result is None or close_result["requested"] == 0:
+                        telegram.send("No owned positions were returned. Verify the current positions in MT5.")
+                    else:
+                        telegram.send(
+                            f"Close-all result: {close_result['closed']}/{close_result['requested']} "
+                            "positions confirmed closed. Verify the remaining positions in MT5."
+                        )
                 elif cmd == "/stop":  
                     risk.stop_today = True
                     telegram.send("⏹️ Trading stopped for today.")
