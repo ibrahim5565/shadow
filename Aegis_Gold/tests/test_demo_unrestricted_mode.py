@@ -71,6 +71,8 @@ class TestDemoRiskGates(unittest.TestCase):
                 self.assertFalse(self.risk.manual_resume())
                 self.assertTrue(os.path.exists(lockfile))
                 self.assertTrue(self.risk.stop_today)
+                self.assertFalse(self.risk.force_unlock())
+                self.assertTrue(os.path.exists(lockfile))
 
 
 if __name__ == "__main__":
