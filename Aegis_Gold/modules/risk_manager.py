@@ -43,6 +43,7 @@ class RiskManager:
 
         # Manual overrides
         self.stop_today          : bool  = False
+        self.daily_loss_lock_active: bool = False
         self.manual_pause        : bool  = False
 
         # Open trade times {ticket: open_time}
@@ -95,9 +96,10 @@ class RiskManager:
         self.consecutive_losses = 0
         self.session_trades     = {k: 0 for k in self.session_trades}
         self.today_date         = today
-        self.stop_today         = False
-        self.is_paused          = False
-        self.manual_pause       = False
+        self.stop_today          = False
+        self.daily_loss_lock_active = False
+        self.is_paused           = False
+        self.manual_pause        = False
         logger.info("Daily state reset ? equity=%.2f date=%s", equity, today)
 
     def check_daily_reset(self):
@@ -113,28 +115,45 @@ class RiskManager:
     DAILY_MAX_LOSS_USD: float = float(getattr(cfg, 'DAILY_LOSS_LIMIT_USD', 25.0))
 
     def is_daily_loss_limit_reached(self, current_equity: Optional[float] = None) -> bool:
-        """Checks if daily loss circuit breaker has triggered."""
-        if self.stop_today:
+        """Fail closed when the daily risk baseline or current equity is unavailable."""
+        if self.stop_today or self.daily_loss_lock_active:
             return True
-        if self.start_equity <= 0:
-            return False
-        
+        if not math.isfinite(self.start_equity) or self.start_equity <= 0:
+            logger.critical("[RISK GATE] Missing/invalid daily starting equity; blocking entries")
+            return True
+
         eq = current_equity
-        if eq is None and self.gateway:
-            acct = self.gateway.get_account_info()
-            if acct:
-                eq = acct.get("equity", self.start_equity)
-        
-        if eq is not None:
-            loss_usd = self.start_equity - eq
-            if loss_usd >= self.DAILY_MAX_LOSS_USD:
-                self.stop_today = True
-                self._create_lockfile()  # Persist daily loss stop across process restarts.
-                self._alert(
-                    f"🚨 [CIRCUIT BREAKER] Daily loss limit reached: -${loss_usd:.2f} >= ${self.DAILY_MAX_LOSS_USD:.2f}. "
-                    f"Trading halted for remainder of the day."
-                )
+        if eq is None:
+            try:
+                acct = self.gateway.get_account_info() if self.gateway else None
+            except Exception as exc:
+                logger.critical("[RISK GATE] Account lookup failed; blocking entries: %s", exc)
                 return True
+            if not acct:
+                logger.critical("[RISK GATE] Account equity unavailable; blocking entries")
+                return True
+            eq = acct.get("equity")
+
+        try:
+            eq = float(eq)
+        except (TypeError, ValueError):
+            logger.critical("[RISK GATE] Account equity is not numeric; blocking entries")
+            return True
+        if not math.isfinite(eq) or eq <= 0:
+            logger.critical("[RISK GATE] Account equity is invalid; blocking entries")
+            return True
+
+        loss_usd = self.start_equity - eq
+        if loss_usd >= self.DAILY_MAX_LOSS_USD:
+            self.stop_today = True
+            self.daily_loss_lock_active = True
+            if not self._create_lockfile():
+                logger.critical("[RISK GATE] Could not persist daily-loss lock; entries remain blocked in memory")
+            self._alert(
+                f"🚨 [CIRCUIT BREAKER] Daily loss limit reached: -${loss_usd:.2f} >= ${self.DAILY_MAX_LOSS_USD:.2f}. "
+                f"Trading halted for remainder of the day."
+            )
+            return True
         return False
 
     def check_daily_loss(self, current_equity: float) -> bool:
@@ -152,16 +171,29 @@ class RiskManager:
 
     # ── LAYER 3: Lockfile ──────────────────────────────────────
 
-    def _create_lockfile(self):
-        data = {"locked_at": time.time(), "reason": "kill_switch"}
+    def _create_lockfile(self) -> bool:
+        data = {"locked_at": time.time(), "reason": "daily_loss_limit"}
+        temp_path = LOCKFILE + ".tmp"
         try:
             os.makedirs(os.path.dirname(LOCKFILE), exist_ok=True)
-            with open(LOCKFILE, "w") as f:
+            with open(temp_path, "w", encoding="utf-8") as f:
                 json.dump(data, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, LOCKFILE)
+            return True
         except Exception as exc:
-            logger.error("Failed to create lockfile: %s", exc)
+            logger.critical("Failed to persist daily-loss lockfile: %s", exc)
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except OSError:
+                pass
+            return False
 
     def is_locked(self) -> bool:
+        if self.daily_loss_lock_active:
+            return True
         if not os.path.exists(LOCKFILE):
             return False
         try:
@@ -182,12 +214,19 @@ class RiskManager:
             self._alert("Lockfile manually removed")
 
     def manual_resume(self):
+        # /resume may clear a manual/consecutive-loss pause, but never a daily-loss lock.
+        if self.daily_loss_lock_active or self.is_locked():
+            self.stop_today = True
+            self._alert("RESUME BLOCKED — daily-loss risk lock is active and cannot be overridden")
+            return False
+
         self.is_paused          = False
         self.manual_pause       = False
         self.stop_today         = False
         self.consecutive_losses = 0
-        self.force_unlock()
-        self._alert("SYSTEM RESUMED — all stops cleared")
+        self.pause_until        = 0.0
+        self._alert("SYSTEM RESUMED — pause cleared; daily risk locks remain enforced")
+        return True
 
     # ── LAYER 4: Consecutive Loss Pause ───────────────────────
 
@@ -349,15 +388,25 @@ class RiskManager:
             pass
         return 0.0
 
-    def can_trade(self, session: str = "LONDON", symbol: str = "", direction: str = "", 
+    def can_trade(self, session: str = "LONDON", symbol: str = "", direction: str = "",
                   current_equity: float = 0.0, session_refresh_active: bool = False) -> bool:
         self.check_auto_resume()  # Check if we should auto-resume from pause
         if self.is_locked() or self.stop_today or self.manual_pause or self.is_paused:
             return False
 
+        try:
+            current_equity = float(current_equity)
+        except (TypeError, ValueError):
+            logger.critical("[RISK GATE] Current equity is unavailable; blocking entries")
+            return False
+        if (not math.isfinite(current_equity) or current_equity <= 0
+                or not math.isfinite(self.start_equity) or self.start_equity <= 0):
+            logger.critical("[RISK GATE] Valid current equity and daily baseline are required; blocking entries")
+            return False
+
         # Enforce hard daily-loss, daily-trade, and session-trade limits here,
         # not only in upstream callers.
-        if self.is_daily_loss_limit_reached(current_equity if current_equity > 0 else None):
+        if self.is_daily_loss_limit_reached(current_equity):
             return False
         if not self.daily_trades_ok() or not self.session_trades_ok(session):
             return False
