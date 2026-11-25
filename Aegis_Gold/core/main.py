@@ -1855,9 +1855,12 @@ async def main_loop():
                 if cmd == "/pause":   
                     risk.manual_pause = True
                     telegram.send("⏸ Trading paused.")
-                elif cmd == "/resume": 
-                    risk.manual_resume()
-                    telegram.send("▶️ Trading resumed.")
+                elif cmd == "/resume":
+                    resumed = risk.manual_resume()
+                    if resumed:
+                        telegram.send("▶️ Manual pause cleared. Risk gates remain active.")
+                    else:
+                        telegram.send("⛔ Resume blocked: daily-loss risk lock is active.")
                 elif cmd == "/closeall": 
                     gateway.close_all_positions()
                     telegram.send("🗑️ Close-all command sent.")
