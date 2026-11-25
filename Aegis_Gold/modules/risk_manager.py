@@ -209,9 +209,9 @@ class RiskManager:
             return True
 
     def force_unlock(self):
-        if os.path.exists(LOCKFILE):
-            os.remove(LOCKFILE)
-            self._alert("Lockfile manually removed")
+        # Retained as a compatibility shim; risk locks cannot be cleared at runtime.
+        logger.critical("[RISK GATE] force_unlock is disabled; daily risk locks require normal expiry/reset")
+        return False
 
     def manual_resume(self):
         # /resume may clear a manual/consecutive-loss pause, but never a daily-loss lock.
