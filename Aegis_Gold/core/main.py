@@ -1427,9 +1427,10 @@ async def main_loop():
     
     # Get initial equity
     acct = await loop.run_in_executor(executor, gateway.get_account_info)
-    if acct:
+    if acct and float(acct.get("equity", 0.0) or 0.0) > 0:
         risk.init_daily(acct["equity"])
-    risk.manual_resume()  # Ensure system starts ACTIVE with all legacy pause/stop_today flags cleared
+    else:
+        logger.critical("[RISK GATE] Initial account equity unavailable; new entries remain blocked until a valid baseline is established")
 
     # Track symbol of open trades to handle history details on close
     open_trade_symbols = {}
@@ -1676,6 +1677,11 @@ async def main_loop():
                 continue
 
             equity = acct["equity"]
+            if not risk.today_date or risk.start_equity <= 0:
+                if float(equity or 0.0) > 0:
+                    risk.init_daily(equity)
+            else:
+                risk.check_daily_reset()
             positions = await loop.run_in_executor(executor, gateway.get_open_positions)
             has_positions = len(positions) > 0
 
