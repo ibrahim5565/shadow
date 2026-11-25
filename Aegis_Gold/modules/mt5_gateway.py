@@ -685,7 +685,11 @@ class MT5Gateway:
             if sym_info is None:
                 return {"ok": False, "reason": f"SYMBOL_INFO_UNAVAILABLE:{symbol}", "latency_ms": lat_ms, "spread": 0.0}
             spread_pts = sym_info.spread
-            spread_limit = cfg.SPREAD_LIMITS.get(session, 40)
+            global_spread_limit = float(cfg.SPREAD_LIMITS.get(session, 40))
+            symbol_spread_limits = cfg.get_symbol_config(symbol).get("spread_limits", {})
+            symbol_spread_limit = float(symbol_spread_limits.get(session, global_spread_limit))
+            # Apply the stricter of the global and symbol-specific limits.
+            spread_limit = min(global_spread_limit, symbol_spread_limit)
             if spread_pts > spread_limit:
                     return {
                         "ok": False,
