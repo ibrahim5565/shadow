@@ -875,9 +875,28 @@ class MT5Gateway:
             return False
 
     def close_all_positions(self):
-        """Close everything across all symbols."""
+        """Attempt to close owned positions and report only confirmed results."""
         positions = self.get_open_positions()
+        if not positions:
+            return {"requested": 0, "closed": 0, "blocked": 0}
+
+        closed = 0
         for pos in positions:
-            self.close_position(pos)
-        if positions:
-            self._alert(f"🚨 CLOSED ALL {len(positions)} POSITIONS")
+            result = self.close_position(pos)
+            if result is not None:
+                closed += 1
+
+        blocked = len(positions) - closed
+        if blocked == 0:
+            self._alert(f"✅ CLOSE-ALL CONFIRMED: {closed}/{len(positions)} positions closed")
+        elif closed == 0:
+            self._alert(
+                f"⛔ CLOSE-ALL NOT CONFIRMED: 0/{len(positions)} positions closed. "
+                "Execution may be disabled or requests rejected; verify positions in MT5."
+            )
+        else:
+            self._alert(
+                f"⚠️ PARTIAL CLOSE: {closed}/{len(positions)} positions confirmed closed; "
+                f"{blocked} remain. Verify positions in MT5."
+            )
+        return {"requested": len(positions), "closed": closed, "blocked": blocked}
