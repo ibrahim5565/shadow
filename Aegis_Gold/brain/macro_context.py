@@ -310,61 +310,13 @@ class MacroContext:
     # ── Internal — ForexFactory RSS fetch ───────────────────────────────────
 
     def _fetch_forexfactory_rss(self) -> List[EconomicEvent]:
+        """Offline-only mode: never fetch economic-calendar data over the internet.
+
+        If a local calendar cache is added later, it must be timestamped and
+        validated before it can influence a decision. No network fallback.
         """
-        Parse ForexFactory RSS feed.
-        Returns list of EconomicEvent for the next 7 days.
-        Times reported as EST in the feed; we convert to UTC.
-        """
-        import urllib.request
-        import urllib.error
-
-        url = "https://nfs.faireconomy.media/ff_calendar_thisweek.xml"
-        events = []
-
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "AegisBot/1.0"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                xml_data = resp.read()
-        except (urllib.error.URLError, OSError) as exc:
-            logger.warning("[MACRO] ForexFactory RSS fetch failed: %s", exc)
-            return []
-
-        try:
-            root = ElementTree.fromstring(xml_data)
-        except ElementTree.ParseError as exc:
-            logger.warning("[MACRO] ForexFactory RSS parse failed: %s", exc)
-            return []
-
-        for item in root.iter("event"):
-            try:
-                title    = _xml_text(item, "title")
-                currency = _xml_text(item, "country")
-                impact   = _xml_text(item, "impact")   # "High", "Medium", "Low"
-                date_str = _xml_text(item, "date")     # e.g. "07-15-2026"
-                time_str = _xml_text(item, "time")     # e.g. "8:30am"
-
-                impact_norm = impact.upper() if impact else "LOW"
-
-                if not title or not date_str:
-                    continue
-
-                utc_dt = _parse_ff_datetime(date_str, time_str)
-                if utc_dt is None:
-                    continue
-
-                events.append(EconomicEvent(
-                    title=title,
-                    currency=currency.upper() if currency else "USD",
-                    impact=impact_norm,
-                    utc_time=utc_dt,
-                ))
-            except Exception as exc:
-                logger.debug("[MACRO] Skipping event due to parse error: %s", exc)
-
-        # Filter to only HIGH/MEDIUM impact
-        events = [e for e in events if e.impact in ("HIGH", "MEDIUM")]
-        logger.debug("[MACRO] RSS parsed: %d relevant events", len(events))
-        return events
+        logger.info("[MACRO] External calendar fetch disabled by offline prediction policy")
+        return []
 
     # ── Internal — Cross-asset polling ──────────────────────────────────────
 

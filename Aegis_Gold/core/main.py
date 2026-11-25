@@ -30,7 +30,6 @@ if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
 # ── Path fix ───────────────────────────────────────────────────
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from brain.ABSOLUTE_NEVER_PAUSE_ENFORCER import activate_absolute_never_pause
 
 # ── Project root (BASE_DIR) ────────────────────────────────────
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -1428,9 +1427,10 @@ async def main_loop():
     
     # Get initial equity
     acct = await loop.run_in_executor(executor, gateway.get_account_info)
-    if acct:
+    if acct and float(acct.get("equity", 0.0) or 0.0) > 0:
         risk.init_daily(acct["equity"])
-    risk.manual_resume()  # Ensure system starts ACTIVE with all legacy pause/stop_today flags cleared
+    else:
+        logger.critical("[RISK GATE] Initial account equity unavailable; new entries remain blocked until a valid baseline is established")
 
     # Track symbol of open trades to handle history details on close
     open_trade_symbols = {}
@@ -1677,6 +1677,11 @@ async def main_loop():
                 continue
 
             equity = acct["equity"]
+            if not risk.today_date or risk.start_equity <= 0:
+                if float(equity or 0.0) > 0:
+                    risk.init_daily(equity)
+            else:
+                risk.check_daily_reset()
             positions = await loop.run_in_executor(executor, gateway.get_open_positions)
             has_positions = len(positions) > 0
 
@@ -1850,12 +1855,21 @@ async def main_loop():
                 if cmd == "/pause":   
                     risk.manual_pause = True
                     telegram.send("⏸ Trading paused.")
-                elif cmd == "/resume": 
-                    risk.manual_resume()
-                    telegram.send("▶️ Trading resumed.")
-                elif cmd == "/closeall": 
-                    gateway.close_all_positions()
-                    telegram.send("🗑️ Close-all command sent.")
+                elif cmd == "/resume":
+                    resumed = risk.manual_resume()
+                    if resumed:
+                        telegram.send("▶️ Manual pause cleared. Risk gates remain active.")
+                    else:
+                        telegram.send("⛔ Resume blocked: daily-loss risk lock is active.")
+                elif cmd == "/closeall":
+                    close_result = gateway.close_all_positions()
+                    if close_result is None or close_result["requested"] == 0:
+                        telegram.send("No owned positions were returned. Verify the current positions in MT5.")
+                    else:
+                        telegram.send(
+                            f"Close-all result: {close_result['closed']}/{close_result['requested']} "
+                            "positions confirmed closed. Verify the remaining positions in MT5."
+                        )
                 elif cmd == "/stop":  
                     risk.stop_today = True
                     telegram.send("⏹️ Trading stopped for today.")
@@ -2164,17 +2178,13 @@ async def main_loop():
                     session = primary_cand["session"]
                     ai_approved = primary_cand["ai_approved"]
                     
-                    # Final entry gate checks
-                    # v6.1 FIX: 'demo_unrestricted_active' was referenced but never
-                    # defined -> NameError crashed the main loop every cycle right
-                    # before execution ("Main loop error: name 'demo_unrestricted_active'
-                    # is not defined"), so queued TRADE signals were NEVER executed.
-                    # Define it from the flag: unrestricted entry gates in DEMO mode
-                    # only; LIVE mode always keeps cooldown + risk gates.
-                    demo_unrestricted_active = bool(getattr(cfg, "DEMO_MODE", True)) and bool(QX.flag("demo_unrestricted_mode"))
-                    can_execute_entry = (len(positions) < max_open_trades_limit)
-                    if not demo_unrestricted_active:
-                        can_execute_entry = can_execute_entry and check_cooldown() and risk.can_trade(session, symbol=sym, current_equity=equity)
+                    # Final entry gate: no DEMO-mode bypasses. Every candidate
+                    # must pass position limits, cooldown, and the normal risk manager.
+                    can_execute_entry = (
+                        len(positions) < max_open_trades_limit
+                        and check_cooldown()
+                        and risk.can_trade(session, symbol=sym, direction=decision.direction, current_equity=equity)
+                    )
 
                     if can_execute_entry:
                         # Run LLM Trading Analyst Vetting
@@ -2186,7 +2196,7 @@ async def main_loop():
                             # Get candles_m1 for the candidate (if available) or copy from MT5
                             try:
                                 import MetaTrader5 as mt5
-                                c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 1, 30)
                                 if c_m1 is None:
                                     c_m1 = candles_m1
                             except Exception:
@@ -2325,6 +2335,7 @@ async def main_loop():
                             decision.lot,
                             decision.tp_points,
                             decision.sl_points,
+                            session,
                         )
 
                         last_latency = latency
@@ -2460,7 +2471,7 @@ async def main_loop():
                                 # Get candles_m1 for the candidate (if available) or copy from MT5
                                 try:
                                     import MetaTrader5 as mt5
-                                    c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 0, 30)
+                                    c_m1 = mt5.copy_rates_from_pos(sym, mt5.TIMEFRAME_M1, 1, 30)
                                     if c_m1 is None:
                                         c_m1 = candles_m1
                                 except Exception:
@@ -2570,6 +2581,7 @@ async def main_loop():
                                 decision.lot,
                                 decision.tp_points,
                                 decision.sl_points,
+                                session,
                             )
                             last_latency = latency
 
@@ -2785,7 +2797,7 @@ def main():
 
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
     flask_thread = threading.Thread(
-        target=lambda: api.run(host='0.0.0.0', port=5001, debug=False, use_reloader=False),
+        target=lambda: api.run(host='127.0.0.1', port=5001, debug=False, use_reloader=False),
         daemon=True,
     )
     flask_thread.start()
@@ -2810,6 +2822,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # ACTIVATE ABSOLUTE NEVER PAUSE
-    activate_absolute_never_pause()
     main()

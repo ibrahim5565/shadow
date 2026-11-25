@@ -1,5 +1,3 @@
-from brain.ABSOLUTE_NEVER_PAUSE_ENFORCER import activate_absolute_never_pause
-
 """
 The Brain Decision Engine v5.0 — EQS-Gated Multi-Path Engine
 
@@ -181,7 +179,7 @@ def get_pattern_entry_signal(
     - Conflicting bullish + bearish patterns → HOLD (Log CONFLICTING_PATTERNS)
     
     Closed Candle Enforced (Requirement 7):
-    - MT5 copy_rates_from_pos(sym, tf, 0, count): index -1 is active unclosed bar.
+    - MT5 gateway requests start_pos=1, so the final supplied bar is the latest completed candle.
       Index -2 is latest completed closed bar.
     - Slices to closed candles so entry only evaluates closed candles.
     
@@ -575,7 +573,7 @@ def _attach_authorization(decision, symbol: str, candles_m5, spread: float, poin
             action="WAIT",
             direction=decision.direction,
             lot=lot,
-            confidence=decision.confidence,
+            confidence=0,
             grade=decision.grade,
             reason=f"AUTHORIZATION_FAILED: {reason_code}",
             thought_log=getattr(decision, "thought_log", []),
@@ -617,6 +615,7 @@ def verify_direction_integrity(decision) -> bool:
             f"direction={final_dir}). DO NOT TRADE."
         )
         decision.action = "WAIT"
+        decision.confidence = 0
         decision.reason = "DIRECTION_INTEGRITY_FAILURE: no authoritative pattern direction"
         return False
 
@@ -626,6 +625,7 @@ def verify_direction_integrity(decision) -> bool:
             f"but final decision.direction={final_dir}. DO NOT TRADE."
         )
         decision.action = "WAIT"
+        decision.confidence = 0
         decision.reason = (
             f"DIRECTION_INTEGRITY_FAILURE: pattern={pattern_dir}, final={final_dir}"
         )
@@ -1404,13 +1404,13 @@ def decide(ticks=None, candles_m5=None, account: dict = None, risk_mgr=None, ses
     try:
         closed_candle_time = "UNKNOWN"
         if candles_m5 is not None and len(candles_m5) > 0:
-            c_target = candles_m5[-2] if len(candles_m5) >= 2 else candles_m5[-1]
+            c_target = candles_m5[-1]
             if isinstance(c_target, dict):
                 closed_candle_time = str(c_target.get("time", "UNKNOWN"))
             elif hasattr(c_target, "time"):
                 closed_candle_time = str(c_target.time)
             elif hasattr(candles_m5, "iloc"):
-                c_idx = -2 if len(candles_m5) >= 2 else -1
+                c_idx = -1
                 closed_candle_time = str(candles_m5.iloc[c_idx]["time"]) if "time" in candles_m5.columns else str(c_idx)
 
         has_pattern = bool(decision.pattern and decision.pattern not in ("NONE", "CONFLICTING_PATTERNS"))
@@ -1445,6 +1445,10 @@ def decide(ticks=None, candles_m5=None, account: dict = None, risk_mgr=None, ses
         )
     except Exception as _log_ex:
         logger.debug(f"Closed candle log formatting error: {_log_ex}")
+
+    # Invariant: WAIT/BLOCK decisions are never presented with trade confidence.
+    if getattr(decision, "action", "WAIT") != "TRADE":
+        decision.confidence = 0
 
     try:
         log_decision(decision)

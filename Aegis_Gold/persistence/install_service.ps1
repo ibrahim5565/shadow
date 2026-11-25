@@ -90,13 +90,15 @@ switch ($Action.ToLower()) {
         # Set working directory
         nssm set $ServiceName AppDirectory $ProjectDir
         
+        # Manual start only; do not auto-start the trading process on Windows boot.
+        nssm set $ServiceName Start SERVICE_DEMAND_START
+
         # Set output log files
         nssm set $ServiceName AppStdout $(Join-Path $LogDir "stdout.log")
         nssm set $ServiceName AppStderr $(Join-Path $LogDir "stderr.log")
         
-        # Configure restart behavior
-        nssm set $ServiceName AppExit Default Restart
-        nssm set $ServiceName AppRestartDelay 5000  # 5 seconds between restarts
+        # Fail-safe policy: never restart the bot automatically after exit.
+        nssm set $ServiceName AppExit Default Exit
         
         # Rotating file settings
         nssm set $ServiceName AppRotateFiles 1

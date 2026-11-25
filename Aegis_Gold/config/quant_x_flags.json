@@ -1,7 +1,7 @@
 {
-  "_comment": "AEGIS QUANT X — Feature Flags. Continuous Testing Mode (Never Pause).",
+  "_comment": "AEGIS QUANT X — Feature Flags. Safety-first mode; unrestricted execution disabled.",
 
-  "demo_unrestricted_mode":   true,
+  "demo_unrestricted_mode":   false,
   "volatility_scaled_lot":    false,
   "kelly_sizing":             false,
   "data_integrity":           true,

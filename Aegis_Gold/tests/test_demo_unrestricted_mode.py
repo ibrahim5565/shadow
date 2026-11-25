@@ -1,83 +1,79 @@
-import unittest
-from unittest.mock import MagicMock
+"""Regression tests: DEMO mode must never bypass risk pauses."""
+import json
 import os
 import sys
+import tempfile
+import time
+import unittest
+from unittest.mock import MagicMock, patch
 
-# Add project root to sys.path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import modules.risk_manager as risk_manager_module
 from modules.risk_manager import RiskManager
-from config.quant_x_config import QX
 
-class MockPosition:
-    def __init__(self, ticket=2001, symbol="XAUUSD", pos_type=0, price_open=2000.0, price_current=2000.0, sl=1998.0, tp=2005.0, volume=0.10):
-        self.ticket = ticket
-        self.symbol = symbol
-        self.type = pos_type
-        self.price_open = price_open
-        self.price_current = price_current
-        self.sl = sl
-        self.tp = tp
-        self.volume = volume
-        self.pattern_tier = "scalp"
 
-class TestDemoUnrestrictedMode(unittest.TestCase):
+class TestDemoRiskGates(unittest.TestCase):
     def setUp(self):
         self.gateway = MagicMock()
-        self.gateway.symbols_data = {
-            "XAUUSD": {"point": 0.01, "digits": 2, "lot_step": 0.01},
-            "EURUSD": {"point": 0.00001, "digits": 5, "lot_step": 0.01}
+        self.gateway.get_account_info.return_value = {
+            "trade_mode": "DEMO",
+            "equity": 10000.0,
         }
-        self.gateway.get_account_info.return_value = {"trade_mode": "DEMO", "equity": 10000.0}
-        self.gateway.modify_sl.return_value = True
-        self.gateway.close_partial_position.return_value = MagicMock(retcode=0)
-        self.risk_mgr = RiskManager(self.gateway)
+        self.risk = RiskManager(self.gateway)
 
-    def test_live_account_safety_rejection(self):
-        """Verify that LIVE account status strictly rejects demo_unrestricted_mode."""
+    def test_demo_account_does_not_bypass_consecutive_loss_pause(self):
         import config.settings as cfg
-        old_max = cfg.MAX_CONSECUTIVE_LOSSES
-        cfg.MAX_CONSECUTIVE_LOSSES = 3
+        original = cfg.MAX_CONSECUTIVE_LOSSES
         try:
-            self.gateway.get_account_info.return_value = {"trade_mode": "REAL", "equity": 10000.0}
-            
-            # Trigger consecutive losses up to MAX_CONSECUTIVE_LOSSES
-            for _ in range(3):
-                self.risk_mgr.on_trade_close(pnl_points=-100.0)
-                
-            # On a REAL account, system MUST activate auto-pause (is_paused = True)
-            self.assertTrue(self.risk_mgr.is_paused, "LIVE account MUST trigger auto-pause on loss limit")
+            cfg.MAX_CONSECUTIVE_LOSSES = 2
+            self.risk.on_trade_close(-10.0)
+            self.risk.on_trade_close(-10.0)
+            self.assertTrue(self.risk.is_paused)
         finally:
-            cfg.MAX_CONSECUTIVE_LOSSES = old_max
+            cfg.MAX_CONSECUTIVE_LOSSES = original
 
-    def test_demo_account_unrestricted_consecutive_loss_bypass(self):
-        """Verify DEMO account bypasses auto-pause and logs informational alert."""
-        import config.settings as cfg
-        old_max = cfg.MAX_CONSECUTIVE_LOSSES
-        cfg.MAX_CONSECUTIVE_LOSSES = 3
-        try:
-            self.gateway.get_account_info.return_value = {"trade_mode": "DEMO", "equity": 10000.0}
-            
-            # Trigger consecutive losses up to MAX_CONSECUTIVE_LOSSES
-            for _ in range(3):
-                self.risk_mgr.on_trade_close(pnl_points=-100.0)
-                
-            # On DEMO account with demo_unrestricted_mode, auto-pause is BYPASSED
-            self.assertFalse(self.risk_mgr.is_paused, "DEMO account must bypass auto-pause in unrestricted mode")
-            self.assertEqual(self.risk_mgr.consecutive_losses, 3)
-        finally:
-            cfg.MAX_CONSECUTIVE_LOSSES = old_max
+    def test_can_trade_respects_pause_state(self):
+        self.risk.is_paused = True
+        self.assertFalse(self.risk.can_trade(session="LONDON", current_equity=10000.0))
 
-    def test_phase_1_exit_layer_remains_intact(self):
-        """Verify Phase 1 exit layer (1.0R BE & partial TP) remains active in unrestricted mode."""
-        pos = MockPosition(symbol="XAUUSD", pos_type=0, price_open=2000.0, sl=1998.0, tp=2005.0, volume=0.10)
-        pos.price_current = 2002.0  # +200 points gain = 1.0R
-        
-        self.risk_mgr.check_breakeven(pos)
-        
-        # Verify 50% partial TP executed and SL moved to BE + buffer
-        self.gateway.close_partial_position.assert_called_once_with(pos, 0.05)
-        self.gateway.modify_sl.assert_called_once_with(2001, "XAUUSD", 2000.10)
+    def test_can_trade_respects_manual_pause(self):
+        self.risk.manual_pause = True
+        self.assertFalse(self.risk.can_trade(session="LONDON", current_equity=10000.0))
+
+    def test_daily_loss_gate_fails_closed_without_starting_equity(self):
+        self.assertTrue(self.risk.is_daily_loss_limit_reached(10000.0))
+
+    def test_daily_loss_gate_fails_closed_when_account_equity_is_unavailable(self):
+        self.risk.start_equity = 10000.0
+        self.gateway.get_account_info.return_value = None
+        self.assertTrue(self.risk.is_daily_loss_limit_reached(None))
+
+    def test_manual_resume_cannot_remove_persisted_daily_loss_lock(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lockfile = os.path.join(temp_dir, "lockfile.json")
+            with open(lockfile, "w", encoding="utf-8") as f:
+                json.dump({"locked_at": time.time(), "reason": "daily_loss_limit"}, f)
+
+            with patch.object(risk_manager_module, "LOCKFILE", lockfile):
+                self.risk.stop_today = True
+                self.assertFalse(self.risk.manual_resume())
+                self.assertTrue(os.path.exists(lockfile))
+                self.assertTrue(self.risk.stop_today)
+
+    def test_daily_loss_trigger_remains_locked_after_manual_resume(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            lockfile = os.path.join(temp_dir, "lockfile.json")
+            with patch.object(risk_manager_module, "LOCKFILE", lockfile):
+                self.risk.start_equity = 10000.0
+                self.assertTrue(self.risk.is_daily_loss_limit_reached(9970.0))
+                self.assertTrue(self.risk.daily_loss_lock_active)
+                self.assertFalse(self.risk.manual_resume())
+                self.assertTrue(os.path.exists(lockfile))
+                self.assertTrue(self.risk.stop_today)
+                self.assertFalse(self.risk.force_unlock())
+                self.assertTrue(os.path.exists(lockfile))
+
 
 if __name__ == "__main__":
     unittest.main()

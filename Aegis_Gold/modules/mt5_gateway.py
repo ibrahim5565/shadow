@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 
 from config import settings as cfg
+from quant_ai.execution.demo_guard import DemoGuard
 
 logger = logging.getLogger("aegis.mt5")
 
@@ -38,6 +39,53 @@ class MT5Gateway:
         self._tg_send = None
 
     # ── helpers ────────────────────────────────────────────────
+
+    def _demo_account_verified(self) -> bool:
+        """Fail closed unless MT5 confirms the connected account is DEMO."""
+        try:
+            account = mt5.account_info()
+            demo_mode = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", None)
+            if account is None or demo_mode is None:
+                logger.critical("[DEMO GUARD] Account or DEMO trade-mode constant unavailable")
+                return False
+            if getattr(cfg, "DEMO_MODE", None) is not True:
+                logger.critical("[DEMO GUARD] config/settings.py must keep DEMO_MODE=True")
+                return False
+            # Use DemoGuard's central TRADING_MODE and ALLOW_LIVE_TRADING policy.
+            # Do not derive or override those values from the UI/application mode flag.
+            guard = DemoGuard(demo_trade_mode=demo_mode)
+            verdict = guard.check(account)
+            if not verdict.get("ok"):
+                logger.critical("[DEMO GUARD] BLOCKED: %s", verdict.get("reason"))
+                return False
+            return True
+        except Exception as exc:
+            logger.critical("[DEMO GUARD] Verification error; blocking: %s", exc)
+            return False
+
+    def _broker_request_check(self, request: dict, operation: str) -> bool:
+        """Ask the broker to validate the exact request before sending it."""
+        try:
+            checked = mt5.order_check(request)
+            if checked is None:
+                logger.error("[ORDER CHECK] %s rejected: broker returned no check result (%s)", operation, mt5.last_error())
+                return False
+            retcode = getattr(checked, "retcode", None)
+            accepted = {0, getattr(mt5, "TRADE_RETCODE_DONE", 10009)}
+            if retcode not in accepted:
+                logger.error("[ORDER CHECK] %s rejected: retcode=%s comment=%s", operation, retcode, getattr(checked, "comment", ""))
+                return False
+            return True
+        except Exception as exc:
+            logger.error("[ORDER CHECK] %s failed; blocking request: %s", operation, exc)
+            return False
+
+    def _execution_permitted(self, operation: str) -> bool:
+        """Require explicit opt-in plus a freshly verified DEMO account."""
+        if not bool(getattr(cfg, "EXECUTION_ENABLED", False)):
+            logger.warning("[EXECUTION DISABLED] %s blocked: AEGIS_DEMO_EXECUTION_ENABLED is not true", operation)
+            return False
+        return self._demo_account_verified()
 
     def set_telegram_callback(self, fn):
         """Inject a non-blocking Telegram send function."""
@@ -134,6 +182,10 @@ class MT5Gateway:
                     server=cfg.MT5_SERVER,
                 )
                 if ok:
+                    if not self._demo_account_verified():
+                        logger.critical("Connected MT5 account is not verifiably DEMO; shutting down")
+                        mt5.shutdown()
+                        return False
                     self._detect_all_symbols()
                     self._cache_symbols_info()
                     sym_list = ", ".join(self.active_symbols)
@@ -264,7 +316,7 @@ class MT5Gateway:
     def get_candles_m5(self, symbol: str, count: int = 100):
         """Fetch M5 OHLC candles for a symbol."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M5, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m5_{symbol}", str(exc))
@@ -273,7 +325,7 @@ class MT5Gateway:
     def get_candles_m1(self, symbol: str, count: int = 20):
         """Fetch M1 OHLC candles for breakout detection."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M1, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m1_{symbol}", str(exc))
@@ -282,7 +334,7 @@ class MT5Gateway:
     def get_candles_m15(self, symbol: str, count: int = 50):
         """Fetch M15 OHLC candles for pattern context analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M15, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m15_{symbol}", str(exc))
@@ -291,7 +343,7 @@ class MT5Gateway:
     def get_candles_m30(self, symbol: str, count: int = 40):
         """Fetch M30 OHLC candles for swing structure analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M30, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_M30, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_m30_{symbol}", str(exc))
@@ -300,7 +352,7 @@ class MT5Gateway:
     def get_candles_h1(self, symbol: str, count: int = 30):
         """Fetch H1 OHLC candles for session trend analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H1, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_h1_{symbol}", str(exc))
@@ -309,7 +361,7 @@ class MT5Gateway:
     def get_candles_h4(self, symbol: str, count: int = 24):
         """Fetch H4 OHLC candles for institutional bias analysis."""
         try:
-            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 0, count)
+            rates = mt5.copy_rates_from_pos(symbol, mt5.TIMEFRAME_H4, 1, count)
             return rates if (rates is not None and len(rates) > 0) else []
         except Exception as exc:
             self._track_error(f"get_candles_h4_{symbol}", str(exc))
@@ -326,7 +378,12 @@ class MT5Gateway:
                     "equity": info.equity,
                     "balance": info.balance,
                     "margin_free": info.margin_free,
+                    "margin": info.margin,
+                    "margin_level": info.margin_level,
                     "profit": info.profit,
+                    "login": info.login,
+                    "server": info.server,
+                    "trade_mode": info.trade_mode,
                 }
             return None
         except Exception as exc:
@@ -363,24 +420,43 @@ class MT5Gateway:
         except Exception:
             pass
 
-        if not min_lot  or min_lot  <= 0: min_lot  = 0.01
-        if not max_lot  or max_lot  <= 0: max_lot  = 100.0
-        if not lot_step or lot_step <= 0: lot_step = 0.01
+        if not min_lot or min_lot <= 0:
+            min_lot = 0.01
+        if not max_lot or max_lot <= 0:
+            max_lot = 100.0
+        if not lot_step or lot_step <= 0:
+            lot_step = 0.01
 
-        # Clamp volume to [min_lot, max_lot]
-        volume = max(min_lot, min(max_lot, float(volume)))
+        # Apply both global and per-symbol strategy caps. Never round upward
+        # beyond the configured risk cap or silently exceed broker minimums.
+        symbol_cfg = cfg.get_symbol_config(symbol)
+        configured_cap = min(
+            float(getattr(cfg, "MAX_LOT", 0.01)),
+            float(symbol_cfg.get("max_lot", getattr(cfg, "MAX_LOT", 0.01))),
+        )
+        effective_max = min(float(max_lot), configured_cap)
+        if configured_cap <= 0 or float(min_lot) > effective_max:
+            raise ValueError(
+                f"Broker minimum lot {min_lot} exceeds configured risk cap "
+                f"{configured_cap} for {symbol}; refusing order"
+            )
 
-        # Round volume to lot_step
-        if lot_step > 0:
-            steps = round(volume / lot_step)
-            volume = steps * lot_step
+        requested = float(volume)
+        if requested <= 0:
+            raise ValueError(f"Requested lot must be positive, got {requested}")
+        volume = min(effective_max, max(float(min_lot), requested))
 
-        # Precision calculation
-        step_str = f"{lot_step:.8f}".rstrip("0")
-        decimals = len(step_str.split(".")[1]) if "." in step_str else 2
-        decimals = min(decimals, 8)
+        # Floor to the broker's volume step to avoid rounding above the cap.
+        steps = int((volume + 1e-12) / float(lot_step))
+        volume = steps * float(lot_step)
+        step_str = f"{float(lot_step):.8f}".rstrip("0")
+        decimals = min(len(step_str.split(".")[1]) if "." in step_str else 2, 8)
         norm_vol = round(volume, decimals)
-        return max(min_lot, norm_vol)
+        if norm_vol < float(min_lot) or norm_vol > effective_max + 1e-12:
+            raise ValueError(
+                f"Normalized lot {norm_vol} violates [{min_lot}, {effective_max}] for {symbol}"
+            )
+        return norm_vol
 
     # ── order execution ────────────────────────────────────────
 
@@ -470,9 +546,15 @@ class MT5Gateway:
         logger.info("[OK] [SL SAFETY VERIFICATION PASSED] Mandatory broker-side SL floor active for all symbols.")
         return True
 
-    def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int):
+    def execute_order(self, symbol: str, direction: str, lot: float, tp_pts: int, sl_pts: int, session: str = "LONDON"):
         """Execute market order for a specific symbol with mandatory hard SL enforcement."""
         try:
+            if not self._execution_permitted("open order"):
+                return None, 0, 0
+            precheck = self.pre_execution_check(symbol, direction, session=session, lot=lot)
+            if not precheck.get("ok"):
+                logger.warning("[PRE-EXECUTION BLOCK] %s %s: %s", direction, symbol, precheck.get("reason"))
+                return None, float(precheck.get("latency_ms", 0.0)), 0
             tick = mt5.symbol_info_tick(symbol)
             if tick is None or symbol not in self.symbols_data:
                 return None, 0, 0
@@ -510,6 +592,29 @@ class MT5Gateway:
                 logger.error(f"[ORDER REJECTED] Invalid direction: {direction}")
                 return None, 0, 0
 
+            # Broker-side stop-distance validation uses the current symbol contract.
+            symbol_info = mt5.symbol_info(symbol)
+            if symbol_info is None:
+                logger.error("[ORDER REJECTED] Symbol contract unavailable for %s", symbol)
+                return None, 0, 0
+            min_stop_distance = float(getattr(symbol_info, "trade_stops_level", 0) or 0) * point
+            if direction == "BUY":
+                if price - request["sl"] < min_stop_distance:
+                    logger.error("[ORDER REJECTED] BUY SL violates broker stop level for %s", symbol)
+                    return None, 0, 0
+                if tp_pts > 0 and request["tp"] - price < min_stop_distance:
+                    logger.error("[ORDER REJECTED] BUY TP violates broker stop level for %s", symbol)
+                    return None, 0, 0
+            else:
+                if request["sl"] - price < min_stop_distance:
+                    logger.error("[ORDER REJECTED] SELL SL violates broker stop level for %s", symbol)
+                    return None, 0, 0
+                if tp_pts > 0 and price - request["tp"] < min_stop_distance:
+                    logger.error("[ORDER REJECTED] SELL TP violates broker stop level for %s", symbol)
+                    return None, 0, 0
+            if not self._broker_request_check(request, f"{direction} {symbol}"):
+                return None, 0, 0
+
             t0 = time.perf_counter()
             result = mt5.order_send(request)
             lat = (time.perf_counter() - t0) * 1000
@@ -535,6 +640,7 @@ class MT5Gateway:
         direction: str,
         session: str = "LONDON",
         latency_abort_ms: float = 100.0,
+        lot: float = 0.01,
     ) -> dict:
         """
         Zero-Bypass pre-execution safety check (Phase 4 — Sniper Mode).
@@ -576,29 +682,34 @@ class MT5Gateway:
         # 3. Spread Check
         try:
             sym_info = mt5.symbol_info(symbol)
-            if sym_info:
-                spread_pts = sym_info.spread
-                spread_limit = cfg.SPREAD_LIMITS.get(session, 40)
-                if spread_pts > spread_limit:
+            if sym_info is None:
+                return {"ok": False, "reason": f"SYMBOL_INFO_UNAVAILABLE:{symbol}", "latency_ms": lat_ms, "spread": 0.0}
+            spread_pts = sym_info.spread
+            global_spread_limit = float(cfg.SPREAD_LIMITS.get(session, 40))
+            symbol_spread_limits = cfg.get_symbol_config(symbol).get("spread_limits", {})
+            symbol_spread_limit = float(symbol_spread_limits.get(session, global_spread_limit))
+            # Apply the stricter of the global and symbol-specific limits.
+            spread_limit = min(global_spread_limit, symbol_spread_limit)
+            if spread_pts > spread_limit:
                     return {
                         "ok": False,
                         "reason": f"SPREAD_TOO_WIDE:{spread_pts}pts>{spread_limit}pts({session})",
                         "latency_ms": lat_ms,
                         "spread": float(spread_pts),
                     }
-            else:
-                spread_pts = 0
         except Exception as _sp:
-            spread_pts = 0
+            return {"ok": False, "reason": f"SPREAD_CHECK_ERROR:{_sp}", "latency_ms": lat_ms, "spread": 0.0}
 
         # 4. Margin Check (0.01 lot minimum)
         try:
             price = tick.ask if direction == "BUY" else tick.bid
             margin_req = mt5.order_calc_margin(
                 mt5.ORDER_TYPE_BUY if direction == "BUY" else mt5.ORDER_TYPE_SELL,
-                symbol, 0.01, price
+                symbol, lot, price
             )
-            if margin_req is not None and acct.margin_free < margin_req:
+            if margin_req is None:
+                return {"ok": False, "reason": "MARGIN_CALCULATION_UNAVAILABLE", "latency_ms": lat_ms, "spread": float(spread_pts)}
+            if acct.margin_free < margin_req:
                 return {
                     "ok": False,
                     "reason": f"INSUFFICIENT_MARGIN:free={acct.margin_free:.2f}<required={margin_req:.2f}",
@@ -606,7 +717,7 @@ class MT5Gateway:
                     "spread": float(spread_pts),
                 }
         except Exception as _me:
-            logger.debug(f"[PRE_CHECK] Margin check error (non-fatal): {_me}")
+            return {"ok": False, "reason": f"MARGIN_CHECK_ERROR:{_me}", "latency_ms": lat_ms, "spread": float(spread_pts)}
 
         lat_ms = (_time.perf_counter() - t_start) * 1000
         return {"ok": True, "reason": "PRE_CHECK_PASS", "latency_ms": lat_ms, "spread": float(spread_pts)}
@@ -656,6 +767,8 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
+            if not self._execution_permitted("close position") or not self._broker_request_check(request, "close position"):
+                return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
         except Exception as exc:
@@ -694,6 +807,8 @@ class MT5Gateway:
                 "deviation": 10,
                 "type_filling": self._get_filling_mode(symbol),
             }
+            if not self._execution_permitted("close position") or not self._broker_request_check(request, "close position"):
+                return None
             result = mt5.order_send(request)
             return result if (result and result.retcode == mt5.TRADE_RETCODE_DONE) else None
         except Exception as exc:
@@ -718,6 +833,8 @@ class MT5Gateway:
                 "sl": round(new_sl, digits),
                 "tp": pos.tp,
             }
+            if not self._execution_permitted("modify stop loss") or not self._broker_request_check(request, "modify stop loss"):
+                return False
             result = mt5.order_send(request)
             return result and result.retcode == mt5.TRADE_RETCODE_DONE
         except Exception:
@@ -743,6 +860,8 @@ class MT5Gateway:
                 "sl": pos.sl,                      # keep existing SL
                 "tp": round(new_tp, digits),        # update TP only
             }
+            if not self._execution_permitted("modify take profit") or not self._broker_request_check(request, "modify take profit"):
+                return False
             result = mt5.order_send(request)
             ok = result and result.retcode == mt5.TRADE_RETCODE_DONE
             if ok:
@@ -756,9 +875,28 @@ class MT5Gateway:
             return False
 
     def close_all_positions(self):
-        """Close everything across all symbols."""
+        """Attempt to close owned positions and report only confirmed results."""
         positions = self.get_open_positions()
+        if not positions:
+            return {"requested": 0, "closed": 0, "blocked": 0}
+
+        closed = 0
         for pos in positions:
-            self.close_position(pos)
-        if positions:
-            self._alert(f"🚨 CLOSED ALL {len(positions)} POSITIONS")
+            result = self.close_position(pos)
+            if result is not None:
+                closed += 1
+
+        blocked = len(positions) - closed
+        if blocked == 0:
+            self._alert(f"✅ CLOSE-ALL CONFIRMED: {closed}/{len(positions)} positions closed")
+        elif closed == 0:
+            self._alert(
+                f"⛔ CLOSE-ALL NOT CONFIRMED: 0/{len(positions)} positions closed. "
+                "Execution may be disabled or requests rejected; verify positions in MT5."
+            )
+        else:
+            self._alert(
+                f"⚠️ PARTIAL CLOSE: {closed}/{len(positions)} positions confirmed closed; "
+                f"{blocked} remain. Verify positions in MT5."
+            )
+        return {"requested": len(positions), "closed": closed, "blocked": blocked}

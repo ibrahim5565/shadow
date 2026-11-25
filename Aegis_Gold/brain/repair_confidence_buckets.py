@@ -230,6 +230,14 @@ class ConfidenceBucketRepair:
             if not hasattr(bucket, '_pnl_values'):
                 bucket._pnl_values = []
             bucket._pnl_values.append(pnl if pnl else 0)
+            r_multiple = trade.get("r_multiple") if isinstance(trade, dict) else None
+            if r_multiple is not None:
+                try:
+                    if not hasattr(bucket, "_r_values"):
+                        bucket._r_values = []
+                    bucket._r_values.append(float(r_multiple))
+                except (TypeError, ValueError):
+                    logger.warning("Skipping invalid r_multiple value in confidence bucket %s", bucket_key)
         
         # Calculate final statistics for each bucket
         for key, bucket in buckets.items():
@@ -274,17 +282,17 @@ class ConfidenceBucketRepair:
                                 max_dd = dd
                         bucket.max_drawdown = round(max_dd, 4)
                         
-                        # Average R
-                        if hasattr(trade, '__getitem__') and 'r_multiple' in str(trade):
-                            # Would need actual R multiple data
-                            bucket.average_r = round(sum(pnls) / n / max(1, abs(sum(1 for p in pnls if p > 0)) * avg_win, 0.0)
+                        # Average/median R are calculated only from actual R-multiple data.
+                        # PnL values must never be mislabeled as R multiples.
+                        r_values = getattr(bucket, "_r_values", [])
+                        bucket.average_r = round(sum(r_values) / len(r_values), 4) if r_values else 0.0
+                        sorted_r = sorted(r_values)
+                        if sorted_r:
+                            mid = len(sorted_r) // 2
+                            median_r = sorted_r[mid] if len(sorted_r) % 2 else (sorted_r[mid - 1] + sorted_r[mid]) / 2
+                            bucket.median_r = round(median_r, 4)
                         else:
-                            bucket.average_r = round(sum(pnls) / n, 4) if n > 0 else 0.0
-                        
-                        # Median R
-                        sorted_pnls = sorted(pnls)
-                        median_idx = n // 2
-                        bucket.median_r = round(sorted_pnls[median_idx] if n > 0 else 0.0, 4)
+                            bucket.median_r = 0.0
                     else:
                         bucket.profit_factor = 0.0
                         bucket.expectancy = 0.0
