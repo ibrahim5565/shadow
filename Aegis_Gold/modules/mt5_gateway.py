@@ -48,11 +48,12 @@ class MT5Gateway:
             if account is None or demo_mode is None:
                 logger.critical("[DEMO GUARD] Account or DEMO trade-mode constant unavailable")
                 return False
-            guard = DemoGuard(
-                trading_mode="DEMO" if getattr(cfg, "DEMO_MODE", False) else "LIVE",
-                allow_live=not bool(getattr(cfg, "DEMO_MODE", False)),
-                demo_trade_mode=demo_mode,
-            )
+            if getattr(cfg, "DEMO_MODE", None) is not True:
+                logger.critical("[DEMO GUARD] config/settings.py must keep DEMO_MODE=True")
+                return False
+            # Use DemoGuard's central TRADING_MODE and ALLOW_LIVE_TRADING policy.
+            # Do not derive or override those values from the UI/application mode flag.
+            guard = DemoGuard(demo_trade_mode=demo_mode)
             verdict = guard.check(account)
             if not verdict.get("ok"):
                 logger.critical("[DEMO GUARD] BLOCKED: %s", verdict.get("reason"))
